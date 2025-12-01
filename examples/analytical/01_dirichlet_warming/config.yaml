@@ -1,0 +1,181 @@
+# data parameters
+data:
+  conceptual        : true
+  conceptual_ini    : 250
+  conceptual_flux   : []
+  conceptual_temp   : 270
+  storm_data_path   : 'database/ts_datasets/storms_engelstad.csv'  # path to storm dataset
+  forcing_data_path : 'database/ts_datasets/era5.csv'  # path to forcing data
+  
+# model settings
+model:
+  longitude         : -143.7  # longitude of the study site
+  latitude          : 70.13  # latitude of the study site
+  time_start        : '01-01-2016'  # DD-MM-YY starting time (if -1 take entire dataset)
+  time_end          : '01-01-2017'  # DD-MM-YY stopping time (if -1 take entire dataset)
+  timestep          : 1  # size of timesteps (in hours)
+  call_xbeach_inter :  168  #  xbeach is called during inter-storm periods every X (wrapper) timesteps (default: 168, i.e. 1 week)
+  time_zone_diff    : -8  # [hours] relative difference in hours with respect to UTC. For Alaska equals -8.
+  spin_up_time      : 0  # [years] spin up time of the thermal module, during which no morphological update is performed
+
+# wrapper parameters:
+wrapper:
+  sea_ice_threshold     : 0.85  # Only run xbeach if sea ice fraction is below threshold, otherwise assume all wave action attenuated
+  xb_threshold          : 1.0   # [m + MSL] threshold value for total water level + R2% (CHECK THIS)
+  CFL_thermal           : 0.5   # maximum CFL for thermal module
+  CFL_xbeach            : 0.9   # maximum CFL for XBeach module
+
+# bathymetry parameters
+bathymetry:
+  xfile           : 'x.grd'   # file used for the grid (x-direction)
+  depfile         : 'bed.dep'  # file used for the bed
+  grid_orientation: 88.14  # [degrees], orientation of bluff face with respect to east (ccw). The current orientation is calculated in the 'generate_bathymetry.ipynb' notebook
+  ppwl            : 40  # number of points in the grid per wavelength. Default 20.
+  nx              : 3   # number of points in initial grid. Set to 'None' if this should be based on ppwl.
+  with_nx         : True  # whether or not to use the number of points specified with nx
+
+  # schematized bathymetry parameters
+  with_schematized_bathymetry : False  # whether or not to generate a schematized bathymetry upon initialization
+  bluff_flat_length           : 100  # [m] length of the flat attached to the crest of the bluff
+  bluff_height                : 12  # [m] height of the bluff
+  bluff_slope                 : 1  # [-] slope of the bluff, i.e., height/width
+  beach_width                 : 12.5  # [m] width of the beach
+  beach_slope                 : 0.1  # [-] slope of the beach, i.e., height/width
+  nearshore_max_depth         : 3  # [m] maximum depth of the nearshore
+  nearshore_slope             : 0.03  # [-] slope of the nearshore section, i.e., height/width
+  offshore_max_depth          : 5  # [m] maximum offshore depth
+  offshore_slope              : 0.007  # [-] slope of the offshore section, i.e., height/width
+  continental_flat_width      : 400  # [m] width of the continental flat section
+  with_artificial             : True  # whether or not to extend to bathymetry with an artificial depth increase (if required by xbeach)
+  artificial_max_depth        : 10  # [m] maximum depth of the artificial section (wave heights in dataset are defined at a depth of 10m, so that value is recommended)
+  artificial_slope            : 0.02  # [-] slope of the artificial section, i.e., height/width
+  N                           : 100 # number of points of each section
+  artificial_flat             : 60  # [m] length of flat section at the end of artificial slope
+
+# xbeach parameters
+xbeach:
+  # general settings
+  with_xbeach : False  # include the xbeach module in the model, default true
+  version     : '1.24'  # version of xbeach used
+
+  # physical processes:
+  with_wind     : False  # include wind in the xbeach model
+  with_ne_layer : True  # if True include 'struct' (and thereby ne_layer) in XBeach computation
+
+  # grid settings
+  thetamin  : -90  # minimum angle
+  thetamax  :  90  # maximum angle
+  dtheta    : 180  # bin width
+
+  # hydrodynamics settings
+  wbctype : 'jons'   # type of wave boundary condition
+  bcfile  : 'jonswap.txt'  # file containing the bc specifications
+  rho_sea_water : 1025  # [kg/m3] density (sea) water
+
+  # sediment properties
+  dryslp      : 0.6  # [dz/dx] Critical avalanching slope above water (dz/dx and dz/dy) (placeholder)
+  wetslp      : 0.06  # [dz/dx] Critical avalanching slope below water (dz/dx and dz/dy) (placeholder)
+  D50         : 0.00190  # [m] mean grain size, value from erikson data (at waterline, a few km westward of the transect) 
+  rho_solid   : 2650  # [kg/m3] density of sediment particles
+  bedfriccoef : 0.02  # [-] bed friction coefficient (placeholder)
+
+  # morphological parameters
+  lsgrad : 0.0  # [1/m] Factor to include longshore transport gradient in 1d simulations; dsy/dy=lsgrad*sy; dimension 1/length scale of longshore gradients
+
+  # wave asymmetry factors
+  facSk: 0.0  # [-] Calibration factor time averaged flows due to wave skewness. Default is 0.15.
+  facAs: 0.0  # [-] Calibration factor time averaged flows due to wave asymmetry. Default is 0.20.
+  facua: 0.0  # [-] Calibration factor time averaged flows due to wave skewness and asymmetry. Default is 0.175.
+
+  # parameters for writing the first storm
+  write_first_storms : 2  # [-] The first N number of storms to write. This doesn't include intermediate XBeach runs
+  tintg_storms : 100  # [s] The output interval (only used if first storms are being written)
+
+# thermal moodel parameters
+thermal:
+  # general
+  with_solar    : True  # include short wave solar radiation in thermal computation step
+  with_longwave : True  # include longwave radiation (incoming & outgoining) in thermal computation step
+  with_latent   : True  # include latent heat in thermal computation step
+  surface_flux_factor : 1   # [-] factor that multiplies with the total surface heat flux, to account for reduced convective transport due to the peat layer
+  surface_flux_angle  : 90  # [degrees] the threshold angle above which the surface_flux_factor is not applied
+
+  # model properties
+  dt              : 120  # [s] timestep used in the thermal model on the temporal subgrid
+  grid_resolution : 150  # number of points for each 1D thermal model
+  max_depth       : 15  # [m], the maximum depth of the 1D thermal model
+  T_melt          : 273.15  # [K] Melting temperature at the interface of water/air and bluff
+  grid_interpolation : "linear_interp_z"  # method for interpolating to new grid. Can be "linear_interp_with_nearest" or "linear_interp_z".
+  N_thaw_threshold: 3  # number of grid points that need to be frozen before being counted as non-erodible surface
+  
+  # solar flux calculator
+  with_solar_flux_calculator : True  # include solar flux calculator in the computation (if False, the every surface is treated as flat); requires 'with_solar: True'
+  angle_min   : -89  # [degrees] minimum angle used in the solar flux calculator map
+  angle_max   : 89  # [degrees] maximum angle used in the solar flux calculator map
+  delta_angle : 1  # [degrees] step size of angle used in the solar flux calculator map
+  t_start     : '2000-01-01'  # minimum date used in the solar flux calculator map
+  t_end       : '2017-01-01'  # maximum date used in the solar flux calculator map
+
+  # guess for convective heat transfer from water
+  with_convective_transport_water_guess : True  # include a guess of convective heat transfer from water in thermal computation step. If False, a more sophisticated computation is performed
+  hc_guess : 500  # [W/m2/K], guess for the convective heat transfer coefficient from water (from Kobayashi et al, 1999)
+
+  # water properties
+  MSL             : 0  # [m], water level relative to outputted local water level at which is switched from wet to dry (positive means higher than output water level)
+  L_water_ice     : 334000 # [J/kg] latent heat of fusion water-ice
+  rho_water       : 1000  # [kg/m3] water density
+  rho_ice         : 971  # [kg/m3] density ice
+
+  # soil properties
+  rho_soil        : "None"
+  rho_particle    : 2650
+  nb_min          : 0.65     # SAME as nb_max for constant porosity
+  nb_max          : 0.65     # SAME as nb_min for constant porosity
+  nb_min_depth    : 1.5      # Doesn't matter when nb_min = nb_max
+  nb_max_depth    : 0.5      # Doesn't matter when nb_min = nb_max
+  c_soil_frozen   : 4600000
+  c_soil_unfrozen : 7000000
+  k_soil_frozen_min   : 2.7  # SAME as max for constant k
+  k_soil_frozen_max   : 2.7  # SAME as min for constant k
+  k_soil_unfrozen_min : 0.6  # SAME as max for constant k
+  k_soil_unfrozen_max : 0.6  # SAME as min for constant k
+  depth_constant_k    : 0    # CHANGE to 0 (constant from surface)
+  geothermal_gradient : 0.00
+
+# output
+output:
+  output_res              : 1  # temporal resolution of output variables in hours (i.e., model outputs given variable names every X hours)
+  use_default_output_path : True  # If True, the model creates a subfolder in the same folder as the configuration file, and stores all results there. If False, the output_path variable is used and a subfolder with the run_id is created at this location
+  output_path             : "P:/11210070-usgscoop-202324-arcticxb/runs/"  # "P:/11210070-usgscoop-202324-arcticxb/runs/" (absolute path to p-drive)
+  write_computation_time  : True  # If True, the model writes the computation time between this output time and the last output time
+  output_vars             : [  # list of output variables
+    "timestamps",
+    "timestep_ids",
+    "timestep_output_ids",
+    "xbeach_times",
+
+    "xgr",
+    "zgr",
+    "angles",
+
+    "thaw_depth",
+    "ground_temperature_distribution", 
+    "ground_enthalpy_distribution",
+    "2m_temperature",
+    "sea_surface_temperature",
+
+    "solar_radiation_factor",
+    "solar_radiation_flux",
+    "long_wave_radiation_flux",
+    "latent_heat_flux",
+    "convective_heat_flux",
+    "total_heat_flux",
+
+    "sea_ice_cover",
+    "wind_velocity",
+    "wind_direction",
+    ]
+  
+  heat_fluxes: ['total_heat_flux[W/m2]', 'long_wave_radiation_flux[W/m2]', 'solar_radiation_flux[W/m2]', 'latent_heat_flux[W/m2]', 'convective_heat_flux[W/m2]']    # define heat fluxes to be used in memory output
+
+  

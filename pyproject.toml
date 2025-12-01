@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "arctic-xbeach"
+version = "0.1.0"
+description = "Coupled thermo-morphological model for Arctic permafrost coastlines"
+readme = "README.md"
+license = {text = "GPL-3.0"}
+authors = [
+    {name = "Kees Nederhoff", email = "kees.nederhoff@deltares-usa.us"},
+]
+requires-python = ">=3.9"
+dependencies = [
+    "numpy>=1.21",
+    "pandas>=1.3",
+    "xarray>=0.19",
+    "netCDF4>=1.5",
+    "scipy>=1.7",
+    "matplotlib>=3.4",
+    "pyyaml>=5.4",
+    "shapely>=1.8",
+]
+
+[project.urls]
+Repository = "https://github.com/deltares-research/arctic-xbeach"
+
+[tool.setuptools.packages.find]
+include = ["arctic_xbeach*"]
