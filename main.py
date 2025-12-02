@@ -22,6 +22,7 @@ Usage:
 
 License: GPL 3.0 
 Repository: https://github.com/deltares-research/arctic-xbeach
+
 ==============================================================================
 """
 
@@ -277,6 +278,16 @@ def main(sim, print_to_screen=True):
                 timestep_id=timestep_id
             )
             
+            # Verify XBeach created output file
+            if run_successful:
+                destination_folder = os.path.join(
+                    sim.result_dir, "xb_files/", f"{timestep_id:010d}/"
+                )
+                xb_output_path = os.path.join(destination_folder, "xboutput.nc")
+                if not os.path.exists(xb_output_path):
+                    logger.error(f"XBeach completed but output file not found: {xb_output_path}")
+                    run_successful = False
+            
             try:
                 if run_successful:
                     logger.debug(f"Successfully ran XBeach for timestep {sim.timestamps[timestep_id]} "
@@ -284,6 +295,7 @@ def main(sim, print_to_screen=True):
                 else:
                     logger.error(f"Failed to run XBeach for timestep {sim.timestamps[timestep_id]} "
                                f"to {sim.timestamps[timestep_id+1]}")
+                    logger.warning(f"Skipping grid update due to XBeach failure")
             except IndexError:
                 logger.info(f"XBeach ran successfully for final timestep ({sim.timestamps[timestep_id]})")
             
@@ -294,8 +306,11 @@ def main(sim, print_to_screen=True):
                 else:
                     sim.xbeach_times[timestep_id + 1] = 0
             
-            # Update grid with new morphology
-            sim.update_grid(timestep_id, fp_xbeach_output="xboutput.nc")
+            # Update grid with new morphology (only if XBeach succeeded)
+            if run_successful:
+                sim.update_grid(timestep_id, fp_xbeach_output="xboutput.nc")
+            else:
+                logger.warning(f"Grid update skipped for timestep {timestep_id} - XBeach did not complete successfully")
 
         # ---------------------------------------------------------------------
         # Thermal Model Updates

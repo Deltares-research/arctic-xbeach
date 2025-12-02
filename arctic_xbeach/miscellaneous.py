@@ -1,9 +1,44 @@
+#!/usr/bin/env python3
+"""
+==============================================================================
+Arctic-XBeach Miscellaneous Utilities
+==============================================================================
+
+Utility functions for Arctic-XBeach simulation framework.
+
+This module provides helper functions for:
+- Text formatting and output display
+- Grid generation and transformation
+- Numerical interpolation and matrix operations
+- Spatial analysis and coordinate transformations
+
+Key Functions:
+    textbox(): Generate formatted text boxes for console output
+    generate_perpendicular_grids(): Create thermal grids perpendicular to bathymetry
+    linear_interp_with_nearest(): Interpolate with fallback to nearest neighbor
+    linear_interp_z(): Depth-based interpolation for vertical profiles
+    get_A_matrix(): Generate finite difference coefficient matrix
+    count_nonzero_until_zero(): Identify thaw front positions
+
+License: GPL 3.0
+Repository: https://github.com/deltares-research/arctic-xbeach
+
+==============================================================================
+"""
+
+# =============================================================================
+# IMPORTS
+# =============================================================================
 import datetime
 
 import numpy as np
 import pandas as pd
 from scipy.interpolate import LinearNDInterpolator
 from scipy.signal import convolve
+
+# =============================================================================
+# TEXT FORMATTING UTILITIES
+# =============================================================================
 
 
 def textbox(text):
@@ -27,6 +62,10 @@ def textbox(text):
     
     return total_text
 
+# =============================================================================
+# INTERPOLATION AND SPATIAL UTILITIES
+# =============================================================================
+
 def interpolate_points(x, y, num_points):
     """
     Interpolate points linearly between given points (x, y).
@@ -47,6 +86,10 @@ def interpolate_points(x, y, num_points):
     all_points = np.column_stack((interpolated_x, interpolated_y))
     
     return all_points
+
+# =============================================================================
+# MATRIX OPERATIONS FOR FINITE DIFFERENCE SCHEMES
+# =============================================================================
 
 def get_A_matrix(n):
     """ This function is used to get the 'A' matrix, which is used to make the numerical scheme faster. It is based on second order central differences for internal points.
@@ -115,6 +158,10 @@ def count_nonzero_until_n_zeros(matrix, dN=1):
     indices[valid_indices] -= dN//2
     
     return indices
+
+# =============================================================================
+# GRID GENERATION AND TRANSFORMATION
+# =============================================================================
 
 def generate_perpendicular_grids(xgr, zgr, resolution=30, max_depth=3):
     """This function takes an xgrid and a zgrid, as well as a resolution and maximum depth, and returns a (temperature) grid perpendicular to the existing x and z-grid.
@@ -245,6 +292,10 @@ def linear_interp_z(abs_xgr, abs_zgr, temp_matrix, abs_xgr_new, abs_zgr_new, wat
         new_temperature_values[i,:] = new_temp_array
     
     return new_temperature_values
+
+# =============================================================================
+# DATETIME UTILITIES
+# =============================================================================
 
 def datetime_from_timestamp(t):
     return datetime.datetime.fromtimestamp(t).strftime('%Y-%m-%d %H:%M:%S')

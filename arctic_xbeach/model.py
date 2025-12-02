@@ -17,7 +17,6 @@ Classes:
 License: GPL 3.0 
 Repository: https://github.com/deltares-research/arctic-xbeach
 
-
 ==============================================================================
 """
 
@@ -684,7 +683,6 @@ class Simulation():
         params = self._get_xbeach_params(
             timestep_id, wind_direction, wind_velocity, wl, tintg
         )
-        
         self.xb_setup.set_params(params)
                 
         # Write model setup to destination folder
@@ -732,7 +730,7 @@ class Simulation():
             "facua": self.config.xbeach.get('facua', 0.175),
 
             # General parameters
-            "befriccoef": self.config.xbeach.bedfriccoef,
+            "bedfriccoef": self.config.xbeach.bedfriccoef,
             
             # Model time
             "tstop": self.dt * 3600,
@@ -774,11 +772,7 @@ class Simulation():
             # Output variables
             "outputformat": "netcdf",
             "tintg": tintg,
-            "tstart": 0,
-            "nglobalvar": [
-                "x", "y", "zb", "zs", "H", "runup", "sedero", 
-                "E", "Sxx", "Sxy", "Syy", "thetamean", "vmag", "urms"
-            ]
+            "tstart": 0
         }
     
     def _configure_xbeach_files(self, timestep_id, destination_folder, wl):
@@ -825,6 +819,7 @@ class Simulation():
         
         # Process params.txt
         new_input_text = []
+        output_vars_added = False
         for line in text:
             if not self.xbeach_storms[timestep_id]:
                 # Create empty BC file for calm conditions
@@ -841,9 +836,27 @@ class Simulation():
                 if "swave" in line:
                     line = wbc_ts1_text
             
-            # Add hotstart configuration
+            # Add hotstart configuration before output section
             if "%% Output variables" in line:
                 new_input_text += hotstart_text
+            
+            # Add nglobalvar after output section header
+            if "%% Output variables" in line and not output_vars_added:
+                if not isinstance(line, list):
+                    line = [line]
+                new_input_text += line
+                
+                # Add nglobalvar output variables
+                globalvars = ["x", "y", "zb", "zs", "H", "sedero", 
+                             "E", "Sxx", "Sxy", "Syy", "thetamean", "vmag", "urms"]
+                new_input_text.append("\n")
+                new_input_text.append(f"nglobalvar = {len(globalvars)}\n")
+                for var in globalvars:
+                    new_input_text.append(f"{var}\n")
+                new_input_text.append("\n")
+                
+                output_vars_added = True
+                continue
                 
             if not isinstance(line, list):
                 line = [line]
@@ -1731,14 +1744,33 @@ class Simulation():
         fp_xbeach_output: string
             filepath to the xbeach sedero (sedimentation-erosion) output relative to the current working directory."""
             
+        # Check if output file exists with absolute path
+        abs_path = os.path.abspath(fp_xbeach_output)
+        if not os.path.exists(abs_path):
+            logger.error(f"XBeach output file not found at: {abs_path}")
+            logger.error(f"Original path provided: {fp_xbeach_output}")
+            logger.error(f"Current working directory: {os.getcwd()}")
+            logger.warning("Returning zero cumulative sedimentation/erosion")
+            return np.zeros(self.xgr.shape)
+            
         # Read output file
-        ds = xr.load_dataset(fp_xbeach_output)
-        ds = ds.sel(globaltime = np.max(ds.globaltime.values)).squeeze()
-        
-        cum_sedero = ds.sedero.values
-        xgr = ds.x.values
-        
-        ds.close()
+        try:
+            ds = xr.load_dataset(abs_path)
+            ds = ds.sel(globaltime = np.max(ds.globaltime.values)).squeeze()
+            
+            cum_sedero = ds.sedero.values
+            xgr = ds.x.values
+            
+            ds.close()
+        except FileNotFoundError as e:
+            logger.error(f"File disappeared during read operation: {abs_path}")
+            logger.warning("Returning zero cumulative sedimentation/erosion")
+            return np.zeros(self.xgr.shape)
+        except Exception as e:
+            logger.error(f"Failed to read XBeach output file {abs_path}: {e}")
+            logger.error(f"Exception type: {type(e).__name__}")
+            logger.warning("Returning zero cumulative sedimentation/erosion")
+            return np.zeros(self.xgr.shape)
 
         # Create an interpolation function
         interpolation_function = interp1d(xgr, cum_sedero, kind='linear', fill_value='extrapolate')

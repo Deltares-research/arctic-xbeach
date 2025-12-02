@@ -1,6 +1,51 @@
+#!/usr/bin/env python3
+"""
+==============================================================================
+Arctic-XBeach Bathymetry Module
+==============================================================================
+
+Bathymetry generation and analysis tools for Arctic coastal modeling.
+
+This module provides functions for:
+- Schematized coastal profile generation
+- Shoreline and bluff feature detection
+- Cross-shore profile analysis
+- Bathymetric grid creation and manipulation
+
+Key Functions:
+    generate_schematized_bathymetry(): Create idealized coastal profiles
+        - Supports multi-segment profiles (bluff, beach, nearshore, offshore)
+        - Configurable slopes and dimensions for each segment
+        - Optional deep-water extension for wave modeling
+    
+    calculate_shoreline_position(): Detect water line intersection
+    calculate_bluff_edge_toe_position(): Identify bluff features (Palaseanu-Lovejoy method)
+
+Profile Components:
+    - Bluff flat: Elevated backshore platform
+    - Bluff face: Steep coastal cliff or scarp
+    - Beach: Gently sloping foreshore
+    - Nearshore: Shallow subtidal zone
+    - Offshore: Deeper continental shelf
+    - Continental flat: Shelf platform
+    - Artificial extension: Optional deep-water boundary
+
+License: GPL 3.0
+Repository: https://github.com/deltares-research/arctic-xbeach
+
+==============================================================================
+"""
+
+# =============================================================================
+# IMPORTS
+# =============================================================================
 import os
 
 import numpy as np
+
+# =============================================================================
+# SHORELINE AND FEATURE DETECTION
+# =============================================================================
 
 
 def calculate_shoreline_position(xgr, zgr, cross_value=0):
@@ -52,6 +97,10 @@ def calculate_bluff_edge_toe_position(xgr, zgr):
     bluff_toe_id = np.argmin(distances)
     
     return xgr[bluff_edge_id], xgr[bluff_toe_id], distances
+
+# =============================================================================
+# SCHEMATIZED BATHYMETRY GENERATION
+# =============================================================================
 
 def generate_schematized_bathymetry(
         bluff_flat_length,

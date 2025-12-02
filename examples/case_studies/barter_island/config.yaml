@@ -7,12 +7,12 @@ data:
 model:
   longitude         : -143.7  # longitude of the study site
   latitude          : 70.13  # latitude of the study site
-  time_start        : '01-01-2002' # DD-MM-YY starting time (if -1 take entire dataset) 	
+  time_start        : '01-07-2015' # DD-MM-YY starting time (if -1 take entire dataset) 	
   time_end          : '01-01-2016'  # DD-MM-YY stopping time (if -1 take entire dataset)	
   timestep          : 1  # size of timesteps (in hours)
   call_xbeach_inter :  168  #  xbeach is called during inter-storm periods every X (wrapper) timesteps (default: 168, i.e. 1 week)
   time_zone_diff    : -8  # [hours] relative difference in hours with respect to UTC. For Alaska equals -8.
-  spin_up_time      : 10  # [years] spin up time of the thermal module, during which no morphological update is performed
+  spin_up_time      : 0  # [years] spin up time of the thermal module, during which no morphological update is performed
 
 # wrapper parameters:
 wrapper:
@@ -53,7 +53,7 @@ xbeach:
 
   # general settings
   with_xbeach : True  # include the xbeach module in the model, default true
-  version     : d:\Git\thermo-morphological-model\xbeach\XBeach_1.24.6057_Halloween_win64_netcdf\xbeach.exe
+  version     : d:\software\XBeach\releases\halloween\XBeach_1.24.6057_Halloween_win64_netcdf\xbeach.exe
 
   # physical processes:
   with_wind     : False  # include wind in the xbeach model
