@@ -1,7 +1,7 @@
 # data parameters
 data:
-  storm_data_path   : 'examples\case_studies\barter_island\database\storms.csv'  # path to storm dataset
-  forcing_data_path : 'examples\case_studies\barter_island\database\era5.csv'  # path to forcing data
+  forcing_data_path : 'examples/case_studies/barter_island/database/era5.csv'
+  storm_data_path   : 'examples/case_studies/barter_island/database/storms.csv'
 
 # model settings
 model:

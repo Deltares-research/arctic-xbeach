@@ -7,7 +7,7 @@ REM ============================================================
 
 REM ---- SETTINGS ------------------------------------------------
 REM Name of your conda environment
-set "CONDA_ENV=arctic-xbeach"
+set "CONDA_ENV=arctic-xbeach-dev"
 
 REM Path to conda activate script (adjust if needed!)
 REM For Anaconda:
@@ -16,14 +16,12 @@ REM For Miniconda, you might need something like:
 REM set "CONDA_ACTIVATE=%USERPROFILE%\miniconda3\Scripts\activate.bat"
 
 REM Path to main Python script
-set "MAIN_PY=D:\Git\thermo-morphological-model\main.py"
+set "MAIN_PY=d:\Git\arctic-xbeach\main.py"
 
 REM Run directories (add/remove as needed)
-set "RUN1=D:\Git\thermo-morphological-model\runs\coupled_calibration_runs\run003_my_estimate_lower_critical_slope"
-set "RUN2=d:\Git\thermo-morphological-model\runs\coupled_calibration_runs\run003_my_estimate_lower_facua"
-set "RUN3=d:\Git\thermo-morphological-model\runs\coupled_validation_runs\run003_my_estimate_validation1_2012"
-set "RUN4=d:\Git\thermo-morphological-model\runs\coupled_validation_runs\run003_my_estimate_validation2_2019"
-set "RUN5=d:\Git\thermo-morphological-model\runs\coupled_calibration_runs\run003_my_estimate_revised_settings"
+set "RUN1=d:\Git\arctic-xbeach\examples\analytical\01_dirichlet_warming"
+set "RUN2=d:\Git\arctic-xbeach\examples\analytical\02_dirichlet_cooling"
+set "RUN3=d:\Git\arctic-xbeach\examples\analytical\03_neumann_constant"
 
 REM --------------------------------------------------------------
 
@@ -39,8 +37,6 @@ REM For each RUN*, call :launch_run with a nice window title
 call :launch_run "Run 1" "%RUN1%"
 call :launch_run "Run 2" "%RUN2%"
 call :launch_run "Run 3" "%RUN3%"
-call :launch_run "Run 4" "%RUN4%"
-call :launch_run "Run 5" "%RUN5%"
 
 echo.
 echo All runs have been launched in separate windows.
