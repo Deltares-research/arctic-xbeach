@@ -52,7 +52,7 @@ XBeach must be installed separately. Download from the official repository: http
 
 **Installation:**
 1. Download the appropriate version for your system
-2. Extract to a location of your choice, for example:
+2. Extract to a location of your choice
 3. Note the path to the executable:
 4. Update your run configuration (`config.yaml`) with this path:
    ```yaml
