@@ -1190,7 +1190,6 @@ class Simulation():
     
     def print_and_return_A_matrix(self):
         """This function prints and returns the A_matrix"""
-        print(self.A_matrix)
         return self.A_matrix
     
     def _generate_initial_ground_temperature_distribution(self, df, t_start, n, max_depth):
@@ -2200,9 +2199,9 @@ class Simulation():
                 z2 = z_thaw_sorted[mask2][0]
                 
                 z_thaw_interpolated = z1 + (z2 - z1)/(x2 - x1) * (x - x1)
-                
+
                 self.thaw_depth[i] = z - (z_thaw_interpolated)
-            except:
+            except (IndexError, ValueError, ZeroDivisionError):
                 self.thaw_depth[i] = 0
         
         # ensure thaw depth is larger than zero everywhere
@@ -2623,7 +2622,7 @@ class NCAppender:
             self.ds.createDimension("time", None)                       # unlimited time dimension for thermal parameters
             self.ds.createDimension("time_xbeach", None)                # unlimited time dimension for xbeach parameters
             self.ds.createDimension("xgr", int(len(xgr)))               # dimension of thermal x
-            self.ds.createDimension("xgr_xb", int(len(xgr_xb)))         # dimension of XBeach grid (only 1D supprt)
+            self.ds.createDimension("xgr_xb", int(len(xgr_xb)))         # dimension of XBeach grid (only 1D support)
             self.ds.createDimension("depth_id", int(len(depth_id)))     # dimension of thermal z (depth)
 
             # coordinate variables

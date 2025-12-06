@@ -117,7 +117,7 @@ def generate_schematized_bathymetry(
         offshore_max_depth, 
         offshore_slope,
         
-        contintental_flat_width,
+        continental_flat_width,
         
         with_artificial=False,
         artificial_max_depth=500,
@@ -138,7 +138,7 @@ def generate_schematized_bathymetry(
     x_start = x_bluff_edge - bluff_flat_length
     x_near_offs = x_wl + nearshore_max_depth / nearshore_slope
     x_offs_cont = x_near_offs + (offshore_max_depth - nearshore_max_depth) / offshore_slope
-    x_cont_arti = x_offs_cont + contintental_flat_width
+    x_cont_arti = x_offs_cont + continental_flat_width
     x_end = x_cont_arti + artificial_max_depth / artificial_slope
     x_flat_extension = x_end + artificial_flat
     

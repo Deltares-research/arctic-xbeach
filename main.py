@@ -174,7 +174,7 @@ def _main(sim, print_to_screen=True):
             offshore_max_depth=sim.config.bathymetry.offshore_max_depth, 
             offshore_slope=sim.config.bathymetry.offshore_slope,
             
-            contintental_flat_width=sim.config.bathymetry.continental_flat_width,
+            continental_flat_width=sim.config.bathymetry.continental_flat_width,
             
             with_artificial=sim.config.bathymetry.with_artificial,
             artificial_max_depth=sim.config.bathymetry.artificial_max_depth,
