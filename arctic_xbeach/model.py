@@ -2315,11 +2315,27 @@ class NCAppender:
 
             # helper to make time-varying vars (thermal time dimension)
             def v1(name, dims_tail, dtype="f4", **kw):
-                return self.ds.createVariable(name, dtype, ("time",) + tuple(dims_tail), zlib=True, complevel=3, **kw)
+                # Calculate optimal chunk sizes for time-series data
+                # For 3D data (time, xgr, depth_id), use chunks of (1, len(xgr), len(depth_id))
+                # For 2D data (time, xgr), use chunks of (1, len(xgr))
+                # For 1D data (time,), use chunks of (100,)
+                if dims_tail:
+                    chunk_shape = (1,) + tuple(self.ds.dimensions[d].size if d in self.ds.dimensions else 1 for d in dims_tail)
+                else:
+                    chunk_shape = (100,)  # For scalar time series
+                return self.ds.createVariable(name, dtype, ("time",) + tuple(dims_tail), 
+                                             zlib=True, complevel=4, shuffle=True, 
+                                             chunksizes=chunk_shape, **kw)
             
             # helper to make time-varying vars (xbeach time dimension)
             def v1_xb(name, dims_tail, dtype="f4", **kw):
-                return self.ds.createVariable(name, dtype, ("time_xbeach",) + tuple(dims_tail), zlib=True, complevel=3, **kw)
+                if dims_tail:
+                    chunk_shape = (1,) + tuple(self.ds.dimensions[d].size if d in self.ds.dimensions else 1 for d in dims_tail)
+                else:
+                    chunk_shape = (100,)
+                return self.ds.createVariable(name, dtype, ("time_xbeach",) + tuple(dims_tail), 
+                                             zlib=True, complevel=4, shuffle=True,
+                                             chunksizes=chunk_shape, **kw)
 
             # time/meta (thermal time)
             self.v = {

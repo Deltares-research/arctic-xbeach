@@ -105,7 +105,7 @@ def main(sim, print_to_screen=True):
     # =========================================================================
     setup_logger(sim, print_to_screen)
     t_start = time.time()
-    logger.info('Initializing Arctic-XBeach')
+    logger.info('Initializing Arctic-XBeach - working GitHub version')
 
     config = sim.config
     logger.debug("Successfully read configuration")
@@ -123,14 +123,24 @@ def main(sim, print_to_screen=True):
     # -------------------------------------------------------------------------
     # Load Forcing Data
     # -------------------------------------------------------------------------
-    sim.load_forcing(
-        os.path.join(sim.proj_dir, sim.config.data.forcing_data_path)
-    )
+    # Handle absolute vs relative paths
+    forcing_path = sim.config.data.forcing_data_path
+    if ':' in forcing_path:  # Drive letter present (Windows absolute path)
+        forcing_path = forcing_path
+    else:
+        forcing_path = os.path.join(sim.proj_dir, forcing_path)
+    
+    sim.load_forcing(forcing_path)
     logger.debug("Successfully loaded forcing")
     
-    sim.initialize_hydro_forcing(
-        os.path.join(sim.proj_dir, sim.config.data.storm_data_path),
-    )
+    # Handle absolute vs relative paths
+    storm_path = sim.config.data.storm_data_path
+    if ':' in storm_path:  # Drive letter present (Windows absolute path)
+        storm_path = storm_path
+    else:
+        storm_path = os.path.join(sim.proj_dir, storm_path)
+    
+    sim.initialize_hydro_forcing(storm_path)
     logger.debug("Successfully loaded hydrodynamic forcing")
     
     xb_times = sim.timesteps_with_xbeach_active()

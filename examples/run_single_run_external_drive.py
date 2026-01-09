@@ -11,7 +11,7 @@ from arctic_xbeach.model import Simulation
 from main import main
 
 # Configure and run simulation
-case_study_path = Path(__file__).parent / "analytical" / "04_dirichlet_warming_latent_heat_refined"
+case_study_path = r'e:\arctic-xbeach-runs\run003_my_estimate_revised_settings'
 sim = Simulation(case_study_path, proj_dir=proj_dir)
 main(sim)
 
