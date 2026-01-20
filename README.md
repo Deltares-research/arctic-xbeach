@@ -42,8 +42,6 @@ pip install -e .
 # Install all dependencies
 pip install -r requirements.txt
 
-# Install XBeach Python toolbox
-pip install git+https://github.com/openearth/xbeach-toolbox.git
 ```
 
 ### Step 3: Download XBeach executable
@@ -86,7 +84,35 @@ python -c "from arctic_xbeach.model import Simulation; print('✓ Arctic-XBeach 
 
 ---
 
-## Quick Start
+### Simple Example (Recommended First Run)
+You can quickly test the full model coupling and functionality using the provided `simple` example. This runs a one-day simulation and exercises all major features of the code. It should finish within a few minutes (depending on your CPU) and is a good starting point to confirm that the installation and coupling work properly.
+
+Run from Python:
+```python
+from arctic_xbeach.model import Simulation
+from main import main
+from pathlib import Path
+
+# Set up project directory
+proj_dir = Path(__file__).parent.parent.resolve()
+case_study_path = Path(__file__).parent / "simple"
+sim = Simulation(case_study_path, proj_dir=proj_dir)
+
+# (Optional) Enable debug logging for more information
+import logging
+logging.getLogger("thermo_model").setLevel(logging.DEBUG)
+
+main(sim)
+```
+
+Or from command line:
+```bash
+python main.py examples/simple
+```
+
+---
+
+You can also run the main Barter Island case study:
 ```python
 from arctic_xbeach.model import Simulation
 
@@ -99,7 +125,6 @@ main(sim)
 ```
 
 Or from command line:
-
 ```bash
 python main.py examples/case_studies/barter_island
 ```
