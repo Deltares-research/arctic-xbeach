@@ -387,7 +387,7 @@ class Model2DV:
         idx, L, ex = self._assemble(p)
         act = p.active
         big = 1e4  # W m-2 K-1: effectively a fixed temperature
-        g_air = ex.A_top / (1.0 / big + ex.r_top) + ex.A_side / (1.0 / big + ex.r_side)
+        g_air = (ex.A_top / (1.0 / big + ex.r_top) + ex.A_side / (1.0 / big + ex.r_side)) * ~p.fluid  # water held at T_water
         g_ext = g_air[act] + (p.fluid * big * g.volume)[act]
         a_ext = (g_air * T_air)[act] + (p.fluid * big * g.volume * T_water)[act] + ex.a_face
         q_geo = np.zeros(g.shape)
