@@ -240,6 +240,66 @@ against 3.324 m analytic (legacy 2.819 m).
 Figure: `output/compare_1d/compare_1d.png`. It shows ground temperature at five depths, thaw
 depth, the 2DV − v1.0 temperature difference and the energy budget error.
 
+## Coupling with XBeach (`coupled/`)
+
+Set `thermal.model: "2dv"` and, optionally, a `thermal2dv:` block in the run config; the keys
+and defaults are in `arctic_xbeach/thermal2dv_driver.py`, and the design is in
+`docs/2dv_design.md` §8.4. `main.py` keeps v1.0's time loop and storm logic. The 2DV model
+steps once per wrapper hour.
+
+- **Hand-off.**
+  - XBeach receives the top envelope of the 2DV soil as its bed.
+  - As ne_layer it receives the thickness down to the first cell that is not fully thawed. A
+    frozen overhang or fallen block therefore cannot be eroded.
+  - XBeach's bed change comes back as whole-cell changes plus a sub-cell offset. The energy and
+    salt of those changes are budgeted.
+  - During storms, XBeach's time-mean water level (`nmeanvar`) sets the 2DV swash level, and
+    h = f_wet × Kobayashi et al. (1999) per column.
+- **Tests (`tests/test_coupling.py`, 12).**
+  - Conservative remap.
+  - Bed level and ne for thawed ground and for a frozen overhang.
+  - Erosion and deposition giving the exact bed, with the budget closed to 1e-12.
+  - Erosion stopping at frozen ground.
+  - The domain edges.
+  - Kobayashi h against a hand calculation.
+  - A calm coupled run bit-identical to a standalone one.
+  - Swash level and h, including NaNs on dry nodes.
+  - Statistics against a time series.
+  - Released bluff sediment at the toe.
+
+**Barter test, 15 June–3 August 2015**, schematized profile, 51 XBeach calls (the storm of 1–2
+August included):
+
+```bash
+python examples/2dv/coupled/run_1d_reference.py                     # v1.0 1D (fixed), ~35 min
+python examples/2dv/coupled/run_coupled_test.py barter_2dv_matched  # 2DV with v1.0's soil and start, ~40 min
+python examples/2dv/coupled/run_coupled_test.py barter_2dv_test     # 2DV soil (ice-rich), steady start
+python examples/2dv/coupled/compare_coupled.py barter_2dv_matched
+```
+
+| | 1D (v1.0 fixed) | 2DV, v1.0 soil and start | 2DV, ice-rich soil, steady start |
+|---|---|---|---|
+| Eroded above z = 0 by XBeach | 69.1 m³ m⁻¹ | 65.4 m³ m⁻¹ | 33.4 m³ m⁻¹ |
+| ne_layer on 1 Aug, above z = 0 (mean) | 0.92 m | 1.88 m | 0.94 m |
+| Tundra thaw depth on 1 Aug | 1.0 m | 1.5 m | 0.5 m |
+| 2DV energy budget error | — | 1.7e-11 | 3.8e-11 |
+| Wall time (XBeach part) | 34 min | 42 min (29 min) | 41 min (29 min) |
+
+- **Matched soil and start.** With the same soil (nb = 0.26) and initial temperatures, the
+  coupled 2DV reproduces the 1D bed evolution: the final profiles nearly coincide and the
+  erosion is within 5%.
+- **The 2DV thaws deeper.** Under the tundra it reaches 1.5 m against 1.0 m. On the beach it
+  reaches more than 2 m against 0.4–0.6 m, because the storm swash floods the beach with warm
+  water in the 2DV model.
+- **The ice-rich default halves the erosion.** The 2DV default has 65% ice above z = 0.3 m and
+  starts from a −9 °C steady state. It thaws much less in the first seven weeks, and XBeach
+  erodes half as much.
+- **The first calm XBeach call.** In the 1D run it removes 10 m³ m⁻¹ (bluff slope 1 against
+  `dryslp` 0.6). In the matched 2DV run it removes 6 m³ m⁻¹, because frozen ground there is
+  non-erodible.
+
+Figures: `output/coupled/compare_barter_2dv_matched.png`, `compare_barter_2dv_test.png`.
+
 ## Limitations of this first version
 
 - **Coupling is new and unvalidated.** Only the short Barter test has been run. h between storms
