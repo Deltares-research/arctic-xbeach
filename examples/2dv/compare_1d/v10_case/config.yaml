@@ -70,6 +70,7 @@ thermal:
   T_melt          : 273.15  # [K]
   grid_interpolation : "linear_interp_z"
   N_thaw_threshold   : 3    # as in the Barter Island case
+  conduction_form    : flux  # conservative d/dz(k dT/dz); 'nodal' = v1.0 as published
   # ghost_node_order not set -> default 2 (central-difference ghost node)
 
   # water (wet points only; never used here)
@@ -82,6 +83,7 @@ thermal:
   # rho_soil = 1000 and L_water_ice = 334000 J/kg give rho_w * L * nb = 1.336e8 J m-3 (2DV target).
   # Effective volumetric c is c_soil_* exactly, independent of rho_soil.
   L_water_ice : 334000   # [J/kg]
+  latent_heat_legacy : false  # per-mass latent = L * rho_w * nb / rho_soil (= L * nb here, since rho_soil = rho_w)
   rho_water   : 1000
   rho_ice     : 917      # unused by the 1D enthalpy scheme
   rho_soil    : 1000     # [kg/m3] explicit, so that rho_soil * L_water_ice = rho_w * L

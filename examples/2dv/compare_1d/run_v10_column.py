@@ -1,8 +1,9 @@
 """Run the Arctic-XBeach v1.0 thermal module on a flat, dry soil column at Barter Island
 (ERA5 forcing, 2016) and export the middle column for comparison with the 2DV model.
 
-The case (v10_case/config.yaml) is driven through the normal v1.0 path (Simulation + main),
-with XBeach off. The v1.0 source is not modified. The only intervention is a diagnostic
+The case (CASE_NAME/config.yaml) is driven through the normal v1.0 path (Simulation + main),
+with XBeach off: v10_case uses the conservative flux-form conduction (default), v10_case_nodal
+the legacy nodal form (v1.0 as published). The v1.0 source is not modified by this script. The only intervention is a diagnostic
 observer around `sim.thermal_update` (instance attribute) that calls the original method
 unchanged and records, per wrapper hour:
   - the initial temperature profile (before the first sub-step),
@@ -24,10 +25,16 @@ import xarray as xr
 # === CONFIGURATION ===
 SCRIPT_DIR = Path(__file__).resolve().parent
 PROJ_DIR = SCRIPT_DIR.parents[2]                      # worktree root (contains main.py)
-CASE_DIR = SCRIPT_DIR / "v10_case"                    # config.yaml, x.grd, bed.dep, ne_layer.txt
+CASE_NAME = "v10_case"                                # case folder; optional override: python run_v10_column.py v10_case_nodal
+OUT_NAMES = {"v10_case": "v10_column.nc",             # flux-form conduction (default)
+             "v10_case_nodal": "v10_column_nodal.nc", # legacy nodal conduction (v1.0 as published)
+             "v10_case_barter_latent": "v10_column_barter_latent.nc"}
+if len(sys.argv) > 1:
+    CASE_NAME = sys.argv[1]
+CASE_DIR = SCRIPT_DIR / CASE_NAME                     # config.yaml, x.grd, bed.dep, ne_layer.txt
 ERA5_PATH = Path("D:/Git/arctic-xbeach/examples/case_studies/barter_island/database/era5.csv")  # full ERA5 series
 STORM_FILE = CASE_DIR / "storms_dry.csv"              # written below: WL = 0, Hs = 0 every hour
-OUT_NC = PROJ_DIR / "examples" / "2dv" / "output" / "compare_1d" / "v10_column.nc"
+OUT_NC = PROJ_DIR / "examples" / "2dv" / "output" / "compare_1d" / OUT_NAMES[CASE_NAME]
 X_INDEX = 1                                           # middle x-point (edge point 0 always gets thaw_depth = 0 in v1.0)
 PRINT_TO_SCREEN = False                               # v1.0 progress log (always written to v10_case/run.log)
 
@@ -77,6 +84,8 @@ original_thermal_update = sim.thermal_update
 def observed_thermal_update(timestep_id, subgrid_timestep_id):
     if diag["T_init"] is None:
         diag["T_init"] = sim.temp_matrix[X_INDEX].copy()
+        # effective volumetric latent heat as the model uses it (per-mass latent x bulk density)
+        diag["latent_vol"] = float(sim.latent_matrix[X_INDEX, 0] * sim.soil_density_matrix[X_INDEX, 0])
     t0 = time.perf_counter()
     original_thermal_update(timestep_id, subgrid_timestep_id)
     diag["t_thermal"] += time.perf_counter() - t0
@@ -116,7 +125,6 @@ lag_diff = float(np.max(np.abs(T_native - T_end)))
 
 T_c = T_end - T_melt
 th = sim.config.thermal
-rho_eff = (th.nb_max * th.rho_water + (1 - th.nb_max) * th.rho_particle) if str(th.rho_soil) == "None" else float(th.rho_soil)
 ds = xr.Dataset(
     data_vars={
         "T": (("time", "depth"), T_c.astype("f8"),
@@ -164,7 +172,9 @@ ds = xr.Dataset(
         "dt_s": dt_thermal, "dz_m": float(depth[1] - depth[0]),
         "c_frozen_effective_J_m3_K": sim.config.thermal.c_soil_frozen,
         "c_unfrozen_effective_J_m3_K": sim.config.thermal.c_soil_unfrozen,
-        "latent_effective_J_m3": rho_eff * sim.config.thermal.L_water_ice * sim.config.thermal.nb_max,
+        "latent_effective_J_m3": diag["latent_vol"],
+        "conduction_form": sim.conduction_form,
+        "latent_heat_legacy": int(bool(th.get("latent_heat_legacy", False))),
         "k_frozen": sim.config.thermal.k_soil_frozen_max, "k_unfrozen": sim.config.thermal.k_soil_unfrozen_max,
         "geothermal_gradient_K_m": sim.config.thermal.geothermal_gradient,
         "wall_time_main_s": round(wall_main, 2),
@@ -179,7 +189,8 @@ ds.to_netcdf(OUT_NC)
 # --- sanity report ----------------------------------------------------------------------------
 n_nan = int(sum(int(ds[v].isnull().sum()) for v in ds.data_vars if v != "forcing_time"))
 i_max = int(ds.thaw_depth.argmax())
-print(f"Wrote {OUT_NC}")
+print(f"Wrote {OUT_NC} (conduction_form = {sim.conduction_form}, "
+      f"effective latent heat {diag['latent_vol']:.4e} J m-3)")
 print(f"NaNs: {n_nan}; |T - v1.0 native T|max = {lag_diff:.3f} K (one-sub-step lag)")
 print(f"T_air {float(ds.T_air.min()):.1f} .. {float(ds.T_air.max()):.1f} degC; "
       f"T_surface {float(ds.T_surface_mean.min()):.1f} .. {float(ds.T_surface_mean.max()):.1f} degC")

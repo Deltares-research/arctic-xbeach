@@ -1,0 +1,120 @@
+# =============================================================================
+# Arctic-XBeach v1.0 thermal-only reference column (flat, dry land, Barter Island),
+# LEGACY nodal conduction form (as published); otherwise identical to v10_case
+# Used to benchmark the 2DV thermal model (examples/2dv/compare_1d/run_v10_column.py).
+# XBeach is OFF; bed is +5 m everywhere so every point is dry for the whole year.
+# =============================================================================
+
+# data parameters
+data:
+  conceptual        : False  # real ERA5 forcing
+  # full ERA5 series (the worktree copy is a 2-row stub). run_v10_column.py overrides this
+  # path from its CONFIGURATION block, so it also runs on Linux.
+  forcing_data_path : 'D:/Git/arctic-xbeach/examples/case_studies/barter_island/database/era5.csv'
+  # synthetic "no storm" file (WL = 0, Hs = 0 every hour) written by run_v10_column.py;
+  # the Barter storms.csv in the worktree is a stub that does not cover 2016.
+  storm_data_path   : 'examples/2dv/compare_1d/v10_case_nodal/storms_dry.csv'
+
+# model settings
+model:
+  longitude         : -143.7
+  latitude          : 70.13
+  time_start        : '01-01-2016'  # DD-MM-YYYY
+  time_end          : '01-01-2017'  # DD-MM-YYYY (exclusive)
+  timestep          : 1     # [h] wrapper timestep
+  call_xbeach_inter : 168   # unused (XBeach off)
+  time_zone_diff    : -8    # [h] only used by the solar flux calculator (off here)
+  spin_up_time      : 0
+
+# wrapper parameters
+wrapper:
+  sea_ice_threshold : 0.85
+  xb_threshold      : 100.0  # unreachable: never trigger XBeach
+  CFL_thermal       : 0.5
+  CFL_xbeach        : 0.9
+
+# bathymetry parameters: 3 points, flat bed at z = +5 m
+bathymetry:
+  xfile            : 'x.grd'
+  depfile          : 'bed.dep'
+  grid_orientation : 88.14
+  ppwl             : 40
+  nx               : 3
+  with_nx          : True
+  with_schematized_bathymetry : False
+
+# xbeach parameters (module off)
+xbeach:
+  with_xbeach   : False
+  version       : '1.24'
+  with_wind     : False
+  with_ne_layer : True
+  rho_sea_water : 1025
+
+# thermal model parameters
+thermal:
+  # surface energy balance
+  with_solar    : True
+  with_longwave : True
+  with_latent   : True
+  # Flat ground: the calculator's factor is sin(A)/sin(A) = 1 on every day with sun above the
+  # horizon, but 0 on polar-night days (shadow mask), which would zero ERA5's small twilight SW.
+  # Off => sw_flux = ERA5 net SW exactly.
+  with_solar_flux_calculator : False
+  surface_flux_factor : 1   # only active if a 'heat_flux_factors' key exists (it does not)
+  surface_flux_angle  : 90
+
+  # numerics
+  dt              : 120     # [s] thermal sub-step
+  grid_resolution : 200     # nodes (node 0 at the surface, node 199 at max_depth)
+  max_depth       : 10      # [m]
+  T_melt          : 273.15  # [K]
+  grid_interpolation : "linear_interp_z"
+  N_thaw_threshold   : 3    # as in the Barter Island case
+  conduction_form    : nodal  # v1.0 as published: nodal k times the [1,-2,1] Laplacian
+  # ghost_node_order not set -> default 2 (central-difference ghost node)
+
+  # water (wet points only; never used here)
+  with_convective_transport_water_guess : True
+  hc_guess : 500
+  MSL      : 0
+
+  # Latent heat. v1.0 keeps enthalpy per unit MASS (Cs = c_vol / rho_soil) and adds
+  # L_water_ice * nb to it, so the effective volumetric latent heat is rho_soil * L_water_ice * nb.
+  # rho_soil = 1000 and L_water_ice = 334000 J/kg give rho_w * L * nb = 1.336e8 J m-3 (2DV target).
+  # Effective volumetric c is c_soil_* exactly, independent of rho_soil.
+  L_water_ice : 334000   # [J/kg]
+  latent_heat_legacy : false  # per-mass latent = L * rho_w * nb / rho_soil (= L * nb here, since rho_soil = rho_w)
+  rho_water   : 1000
+  rho_ice     : 917      # unused by the 1D enthalpy scheme
+  rho_soil    : 1000     # [kg/m3] explicit, so that rho_soil * L_water_ice = rho_w * L
+  rho_particle: 2650     # unused because rho_soil is given
+
+  # saturated silt, phi_s = 0.6, phi_h2o = 0.4 (matches the 2DV material model)
+  nb_min          : 0.4
+  nb_max          : 0.4
+  nb_min_depth    : 1.5
+  nb_max_depth    : 0.5
+  c_soil_frozen   : 1960000   # [J m-3 K-1]
+  c_soil_unfrozen : 2880000   # [J m-3 K-1]
+  k_soil_frozen_min   : 2.597
+  k_soil_frozen_max   : 2.597
+  k_soil_unfrozen_min : 1.513
+  k_soil_unfrozen_max : 1.513
+  depth_constant_k    : 0
+  geothermal_gradient : 0.034  # [K/m]
+
+  # solar flux calculator settings (unused while the calculator is off)
+  angle_min   : -89
+  angle_max   : 89
+  delta_angle : 1
+  t_start     : '2016-01-01'
+  t_end       : '2017-01-01'
+
+# output
+output:
+  output_res              : 1   # [h]
+  use_default_output_path : True
+  output_path             : ""
+  write_computation_time  : True
+  heat_fluxes: ['total_heat_flux[W/m2]', 'long_wave_radiation_flux[W/m2]', 'solar_radiation_flux[W/m2]', 'latent_heat_flux[W/m2]', 'convective_heat_flux[W/m2]']

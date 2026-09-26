@@ -879,39 +879,65 @@ class Simulation():
             if os.path.exists(src_path):
                 shutil.copy2(src_path, destination_folder)
     
-    def start_xbeach(self, xbeach_path, params_path, batch_fname="run.bat", timestep_id=None):
-        """
-        Running this function starts the XBeach module as a subprocess.
-        --------------------------
-        xbeach_path: str
-            string containing the file path to the xbeach executible from the project directory
-        params_path: str
-            string containing the file path to the params.txt file from the project directory
-        batch_fname: str
-            name used for the generated batch file
-        timestep_id: int
-            timestep ID to determine the destination folder
-        --------------------------
+    def resolve_xbeach_executable(self, xbeach_path=None):
+        """Return the XBeach executable as an absolute Path.
 
-        returns boolean (True if process was a sucess, False if not)
+        Order: config key `xbeach.executable` (absolute path; `~` and environment variables are
+        expanded), then `xbeach_path` (legacy: `proj_dir/<xbeach.version>`, either the executable
+        itself or a folder containing `xbeach` / `xbeach.exe`).
         """
-        # Determine working directory (destination folder if timestep_id is provided)
-        if timestep_id is not None:
-            work_dir = os.path.join(self.result_dir, "xb_files/", (10 - len(str(int(timestep_id)))) * '0' + str(int(timestep_id)) + '/')
+        exe_cfg = self.config.xbeach.get("executable") if "xbeach" in self.config else None
+        if exe_cfg:
+            exe = Path(os.path.expandvars(str(exe_cfg))).expanduser()
         else:
-            work_dir = self.cwd
-            
-        with open(os.path.join(work_dir, batch_fname), "w") as f:
-            f.write(f'cd "{work_dir}"\n')
-            f.write(f'call "{xbeach_path}"')
-        
-        # Command to run XBeach
-        command = [str(os.path.join(work_dir, batch_fname))]
+            if xbeach_path is None:
+                xbeach_path = Path(self.proj_dir) / str(self.config.xbeach.version)
+            exe = Path(os.path.expandvars(str(xbeach_path))).expanduser()
+            if exe.is_dir():
+                exe = exe / ("xbeach.exe" if os.name == "nt" else "xbeach")
+        return exe.resolve()
 
-        # # Call XBeach using subprocess
-        return_code = subprocess.run(command, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE).returncode
+    def start_xbeach(self, xbeach_path=None, params_path=None, timestep_id=None, log_fname="xbeach.log", **kwargs):
+        """Run XBeach as a subprocess in the run folder of `timestep_id` (cross-platform, no shell).
 
-        return return_code == 0
+        Args:
+            xbeach_path (str, optional): legacy executable path or folder, used only when the config
+                has no `xbeach.executable` key (see `resolve_xbeach_executable`).
+            params_path: unused, kept for backward compatibility of the call signature.
+            timestep_id (int, optional): timestep whose `xb_files/<id>/` folder is the working
+                directory; the simulation folder (`self.cwd`) if None.
+            log_fname (str): file in the working directory that receives XBeach stdout and stderr.
+            **kwargs: ignored (e.g. the old `batch_fname`).
+
+        Returns:
+            bool: True if XBeach exited with return code 0 and wrote `xboutput.nc`.
+        """
+        if timestep_id is not None:
+            work_dir = Path(self.result_dir) / "xb_files" / f"{int(timestep_id):010d}"
+        else:
+            work_dir = Path(self.cwd)
+
+        exe = self.resolve_xbeach_executable(xbeach_path)
+        if not exe.is_file():
+            logger.error(f"XBeach executable not found: {exe}")
+            return False
+
+        t0 = time.perf_counter()
+        with open(work_dir / log_fname, "w") as log:
+            try:
+                return_code = subprocess.run([str(exe)], cwd=work_dir, stdout=log,
+                                             stderr=subprocess.STDOUT, check=False).returncode
+            except OSError as e:  # e.g. wrong architecture, missing shared libraries, no exec permission
+                logger.error(f"Could not start XBeach ({exe}): {e}")
+                return False
+        self.xbeach_wall_time = time.perf_counter() - t0
+        logger.debug(f"XBeach finished in {self.xbeach_wall_time:.1f} s with return code {return_code} ({work_dir})")
+
+        output_ok = (work_dir / "xboutput.nc").is_file()
+        if return_code != 0 or not output_ok:
+            logger.error(f"XBeach failed in {work_dir}: return code {return_code}, xboutput.nc "
+                         f"{'present' if output_ok else 'missing'}; see {work_dir / log_fname}")
+        return return_code == 0 and output_ok
     
     def copy_xb_output_to_result_dir(self, timestep_id, fp_xbeach_output="xboutput.nc"):
         
@@ -1008,8 +1034,8 @@ class Simulation():
             unfrozen_mask * \
                 (self.Cl_matrix * self.temp_matrix + \
                 (self.Cs_matrix - self.Cl_matrix) * self.config.thermal.T_melt + \
-                self.config.thermal.L_water_ice * self.nb_matrix)  # unit of L_water_ice is already corrected to use water density
-        
+                self.latent_matrix)  # latent heat per unit mass of soil [J/kg], see define_soil_property_matrices
+
         # calculate the courant-friedlichs-lewy number matrix
         self.k_matrix = frozen_mask * self.k_frozen_matrix + unfrozen_mask * self.k_unfrozen_matrix
         self.cfl_matrix = self.k_matrix / self.soil_density_matrix * self.config.thermal.dt / self.dz**2
@@ -1019,7 +1045,13 @@ class Simulation():
             # print(f"CFL should be smaller than 0.5, currently {np.max(self.cfl_matrix):.4f}")
             pass
         
-        # get the 'A' matrix, which is used to make the numerical scheme faster. It is based on second order central differences for internal points
+        # conduction scheme: "flux" (conservative d/dz(k dT/dz), default) or "nodal" (legacy k d2T/dz2)
+        self.conduction_form = str(self.config.thermal.get("conduction_form", "flux")).lower()
+        if self.conduction_form not in ("flux", "nodal"):
+            raise ValueError(f"thermal.conduction_form must be 'flux' or 'nodal', got '{self.conduction_form}'")
+        logger.info(f"Thermal conduction form: {self.conduction_form}")
+
+        # get the 'A' matrix (nodal form only), which is used to make the numerical scheme faster. It is based on second order central differences for internal points
         # at the border points, the grid is extended with an identical point (i.e. mirrored), in order to calculate the second derivative
         self.A_matrix = um.get_A_matrix(self.config.thermal.grid_resolution)
         
@@ -1080,17 +1112,52 @@ class Simulation():
             self.nb_matrix = np.tile(self.nb_distr, (N, 1))
             
         # calculate / read in density
-        if self.config.thermal.rho_soil == "None":
-            self.soil_density_matrix = self.nb_matrix * self.config.thermal.rho_water + (1 - self.nb_matrix) * self.config.thermal.rho_particle
-        else:
-            self.soil_density_matrix = np.ones(self.nb_matrix.shape) * self.config.thermal.rho_soil
-        
+        self.soil_density_matrix = self._soil_density(self.nb_matrix)
+
         # using the states, the initial enthalpy can be determined. The enthalpy matrix is used as the 'preserved' quantity, and is used to numerically solve the
         # heat balance equation. Enthalpy formulation from Ravens et al. (2023).
         self.Cs_matrix = self.config.thermal.c_soil_frozen / self.soil_density_matrix
         self.Cl_matrix = self.config.thermal.c_soil_unfrozen / self.soil_density_matrix
-        
+
+        # latent heat per unit mass of soil [J/kg], consistent with the per-mass enthalpy
+        self.latent_matrix = self._latent_heat_per_mass(self.nb_matrix, self.soil_density_matrix)
+
         return None
+
+    def _soil_density(self, nb):
+        """Bulk soil density [kg/m3]: nb*rho_water + (1-nb)*rho_particle, or the constant rho_soil if given."""
+        rho_soil = self.config.thermal.rho_soil
+        if rho_soil is None or str(rho_soil) == "None":
+            return nb * self.config.thermal.rho_water + (1 - nb) * self.config.thermal.rho_particle
+        return np.ones(np.shape(nb)) * float(rho_soil)
+
+    def _latent_heat_of_fusion(self):
+        """Latent heat of fusion L_f [J/kg] from thermal.L_water_ice (evaluated once).
+
+        L_water_ice is J/kg (3.34e5 for water). Values > 1e6 are taken to be the old convention,
+        L_f * rho_water (J per m3 of water), and are divided by rho_water.
+        """
+        if getattr(self, "_L_f", None) is None:
+            L = float(self.config.thermal.L_water_ice)
+            if L > 1e6:
+                logger.warning(
+                    f"thermal.L_water_ice = {L:.4g} is > 1e6: interpreted as J per m3 of water (old convention); "
+                    f"using L_f = L_water_ice / rho_water = {L / self.config.thermal.rho_water:.4g} J/kg. "
+                    f"Set L_water_ice in J/kg (334000) to silence this warning.")
+                L = L / self.config.thermal.rho_water
+            self._L_f = L
+        return self._L_f
+
+    def _latent_heat_per_mass(self, nb, rho_soil):
+        """Latent heat per unit mass of soil [J/kg] for ice/water content nb and bulk density rho_soil.
+
+        Default: L_f * rho_water * nb / rho_soil, i.e. rho_water * L_f * nb per unit volume.
+        thermal.latent_heat_legacy = true: L_water_ice * nb (v1.0 as published; per unit volume
+        this is rho_soil * L_water_ice * nb).
+        """
+        if self.config.thermal.get("latent_heat_legacy", False):
+            return self.config.thermal.L_water_ice * nb
+        return self._latent_heat_of_fusion() * self.config.thermal.rho_water * nb / rho_soil
     
     @classmethod
     def _compute_nb_distr(self, nb_max, nb_min, nb_max_depth, nb_min_depth, N, max_depth):
@@ -1188,43 +1255,75 @@ class Simulation():
             inbetween_mask * ((self.k_frozen_matrix + self.k_unfrozen_matrix) / 2) + \
             unfrozen_mask * self.k_unfrozen_matrix
         
-        # get the new boundary condition
+        # get the new boundary condition (this also sets self.heat_flux, the surface flux Q [W/m2, + into the soil])
         self.ghost_nodes_temperature = self._get_ghost_node_boundary_condition(timestep_id, subgrid_timestep_id)
         self.bottom_boundary_temperature = self._get_bottom_boundary_temperature()
-                
-        # aggregate temperature matrix
-        aggregated_temp_matrix = np.concatenate((
-            self.ghost_nodes_temperature.reshape(len(self.xgr), 1),
-            self.temp_matrix,
-            self.bottom_boundary_temperature.reshape(len(self.xgr), 1)
-            ), axis=1) 
-        
-        # determine the courant-friedlichs-lewy number matrix
+
         dt = self.config.thermal.dt
-        update_coeff = self.k_matrix / self.soil_density_matrix * dt / self.dz**2
-        
-        # Verify stability using proper Fourier number
         Cvol_matrix = (
             frozen_mask * self.config.thermal.c_soil_frozen +
-            inbetween_mask * 0.5 * (self.config.thermal.c_soil_frozen + 
+            inbetween_mask * 0.5 * (self.config.thermal.c_soil_frozen +
                                     self.config.thermal.c_soil_unfrozen) +
             unfrozen_mask * self.config.thermal.c_soil_unfrozen
         )
-        Fo_matrix = (self.k_matrix / Cvol_matrix) * (dt / self.dz**2)
+
+        if self.conduction_form == "nodal":
+            # legacy v1.0: nodal k times the discrete Laplacian (k d2T/dz2), not conservative where k varies
+            aggregated_temp_matrix = np.concatenate((
+                self.ghost_nodes_temperature.reshape(len(self.xgr), 1),
+                self.temp_matrix,
+                self.bottom_boundary_temperature.reshape(len(self.xgr), 1)
+                ), axis=1)
+            update_coeff = self.k_matrix / self.soil_density_matrix * dt / self.dz**2
+
+            # Verify stability using proper Fourier number
+            Fo_matrix = (self.k_matrix / Cvol_matrix) * (dt / self.dz**2)
+            self._check_fourier(Fo_matrix, dt)
+
+            # get the new enthalpy matrix
+            laplacian_T = aggregated_temp_matrix @ self.A_matrix
+            self.enthalpy_matrix = self.enthalpy_matrix + update_coeff * laplacian_T
+
+        else:
+            # conservative flux form d/dz(k dT/dz) on the same nodes (vertex-centred finite volume):
+            # interior node j owns [z_j - dz/2, z_j + dz/2], the surface and bottom nodes own half cells.
+            # Face conductivity = harmonic mean of the two nodes (series resistance, as in the 2DV model).
+            # Boundary fluxes are exactly Q (top) and k_bottom * G (bottom, geothermal, upward). This is
+            # the ghost-node update with T_ghost = T[1] + 2 dz Q / k_face (top) and T[-2] + 2 dz G k[-1]/k_face (bottom).
+            T = self.temp_matrix
+            k = self.k_matrix
+            k_face = 2.0 * k[:, 1:] * k[:, :-1] / (k[:, 1:] + k[:, :-1])
+            F = k_face * (T[:, 1:] - T[:, :-1]) / self.dz          # [W/m2] from node j+1 into node j
+            net = np.zeros_like(T)
+            net[:, :-1] += F
+            net[:, 1:] -= F
+            net[:, 0] += self.heat_flux
+            net[:, -1] += k[:, -1] * self.config.thermal.geothermal_gradient
+
+            # control-volume widths (half cells at both ends)
+            w = np.full(T.shape[1], self.dz)
+            w[[0, -1]] = 0.5 * self.dz
+
+            # stability: diagonal coefficient 1 - dt * sum(k_face) / (C_vol w dz) >= 0, written as Fo <= 0.5
+            k_sum = np.zeros_like(T)
+            k_sum[:, :-1] += k_face
+            k_sum[:, 1:] += k_face
+            Fo_matrix = k_sum / Cvol_matrix * dt / (2.0 * w * self.dz)
+            self._check_fourier(Fo_matrix, dt)
+
+            self.enthalpy_matrix = self.enthalpy_matrix + dt * net / (self.soil_density_matrix * w)
+
+        return None
+
+    def _check_fourier(self, Fo_matrix, dt):
+        """Raise if the explicit scheme's Fourier number exceeds 0.5 anywhere."""
         Fo_max = float(np.nanmax(Fo_matrix))
-        
         if Fo_max > 0.5:
-            max_stable_dt = 0.5 * self.dz**2 / np.nanmax(self.k_matrix / Cvol_matrix)
+            max_stable_dt = 0.5 * dt / Fo_max
             raise ValueError(
                 f"Thermal timestep too large: max(Fo) = {Fo_max:.3f} > 0.5. "
                 f"Reduce dt to <= {max_stable_dt:.3e} s"
             )
-            
-        # get the new enthalpy matrix
-        laplacian_T = aggregated_temp_matrix @ self.A_matrix
-        self.enthalpy_matrix = self.enthalpy_matrix + update_coeff * laplacian_T
-        
-        return None
     
     def _get_phase_masks(self):
         "Returns phase masks from current enthalpy distribution."
@@ -1234,7 +1333,7 @@ class Simulation():
         unfrozen_mask = (self.enthalpy_matrix) > (
             self.config.thermal.T_melt * self.Cl_matrix + \
             (self.Cs_matrix - self.Cl_matrix) * self.config.thermal.T_melt + \
-            self.config.thermal.L_water_ice * self.nb_matrix
+            self.latent_matrix
             )
         
         inbetween_mask = np.ones(frozen_mask.shape) - frozen_mask - unfrozen_mask
@@ -1251,7 +1350,7 @@ class Simulation():
             unfrozen_mask * \
                 (self.enthalpy_matrix - \
                 (self.Cs_matrix - self.Cl_matrix) * self.config.thermal.T_melt - \
-                self.config.thermal.L_water_ice * self.nb_matrix) / \
+                self.latent_matrix) / \
                     (self.Cl_matrix)
                     
         return temp_matrix
@@ -1670,18 +1769,20 @@ class Simulation():
             
             elif self.config.thermal.grid_interpolation == "linear_interp_z":
                 
-                # Compute density
-                rho_value = self.config.thermal.nb_max * self.config.thermal.rho_water + (1 - self.config.thermal.nb_max) * self.config.thermal.rho_particle
-                
+                # Compute density of the fill sediment (nb = nb_max), as define_soil_property_matrices will
+                # (the old code always used the nb-based density, even with a constant rho_soil)
+                rho_value = float(self._soil_density(np.float64(self.config.thermal.nb_max)))
+
                 # From denisty, compute specific heat
                 Cs_value = self.config.thermal.c_soil_frozen / rho_value
                 Cl_value = self.config.thermal.c_soil_unfrozen / rho_value
-                
+
                 # Compute top fill value for submerged sediment
                 if (self.current_sea_temp <= self.config.thermal.T_melt):
                     enthalpy_submerged_sediment = self.current_sea_temp * Cs_value
                 else:
-                    enthalpy_submerged_sediment = self.current_sea_temp * Cl_value + (Cs_value - Cl_value) * self.config.thermal.T_melt + self.config.thermal.L_water_ice * self.config.thermal.nb_max
+                    enthalpy_submerged_sediment = self.current_sea_temp * Cl_value + (Cs_value - Cl_value) * self.config.thermal.T_melt + \
+                        self._latent_heat_per_mass(self.config.thermal.nb_max, rho_value)
                 
                 # get current water level
                 self.water_level = (self._update_water_level(timestep_id))

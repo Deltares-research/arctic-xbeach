@@ -282,11 +282,8 @@ def main(sim, print_to_screen=True):
             sim.xbeach_setup(timestep_id)
             logger.debug(f"Starting XBeach for timestep {sim.timestamps[timestep_id]}")
             
-            run_successful = sim.start_xbeach(
-                os.path.join(sim.proj_dir, Path(sim.config.xbeach.version)),
-                sim.cwd,
-                timestep_id=timestep_id
-            )
+            # executable from config xbeach.executable, else proj_dir/<xbeach.version>
+            run_successful = sim.start_xbeach(timestep_id=timestep_id)
             
             # Verify XBeach created output file
             if run_successful:
