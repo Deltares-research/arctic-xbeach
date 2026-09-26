@@ -26,6 +26,8 @@ Config block `thermal2dv` (all keys optional; defaults below):
                                ERA5 csv is used with downward fluxes derived from the net fluxes
     S_sea                      30 [psu]
     q_geo                      0.06 [W m-2] geothermal flux at the base (v1.0 prescribes a gradient instead)
+    soil                       "2dv" (ice-rich bluff and tundra, as above) or "v1_config" (thermal.nb_* profile)
+    initial_state              "steady" (conduction steady state) or "era5_soil" (v1.0: ERA5 soil levels at t0)
     output_interval            24 [h] between 2DV snapshots in thermal2dv.nc
 """
 
@@ -50,7 +52,8 @@ DEFAULTS = dict(x_offshore=None, z_offshore=-6.0, fine_window=(-45.0, 15.0), dx_
                 dz_fine=0.25, dz_max=3.0, z_bottom=-30.0, z_top=None, phi_s_ice_rich=0.35, z_ice_rich=0.3,
                 phi_s_sediment=0.6, T_land_mean=-9.0, T_seabed_mean=-1.5, h_water=500.0, h_factor=1.0,
                 h_bounds=(50.0, 1.0e4), erosion=True, collapse=True, d_crit=1.5, radiation_geometry=True,
-                era5_point=None, S_sea=30.0, output_interval=24, ne_offshore=10.0, n_beach=0.4, q_geo=0.06)
+                era5_point=None, S_sea=30.0, output_interval=24, ne_offshore=10.0, n_beach=0.4, q_geo=0.06,
+                soil="2dv", initial_state="steady")
 
 
 class Thermal2DVDriver:
@@ -89,15 +92,33 @@ class Thermal2DVDriver:
         x_shore = float(xp[np.argmax(zp > wl0)])
         soil = grid.below_profile(xp, zp)
         land = X >= x_shore
-        ice_rich = soil & land & (Z >= cfg["z_ice_rich"])
-        m.phi_s[soil] = cfg["phi_s_sediment"]
-        m.phi_s[ice_rich] = cfg["phi_s_ice_rich"]
+        depth = np.interp(X, xp, zp) - Z  # depth below the local bed
+        if cfg["soil"] == "v1_config":
+            # v1.0's water/ice content nb(depth) (sigmoid from nb_max to nb_min), everywhere
+            th = sim.config.thermal
+            nb_max, nb_min = float(th.nb_max), float(th.nb_min)
+            d0, d1 = float(th.nb_max_depth), float(th.nb_min_depth)
+            nb = nb_max + (nb_min - nb_max) / (1.0 + np.exp(-(depth - 0.5 * (d0 + d1)) * 10.0 / max(d1 - d0, 1e-9)))
+            nb = np.where(depth <= d0, nb_max, np.where(depth >= d1, nb_min, nb))
+            m.phi_s[soil] = 1.0 - nb[soil]
+        else:
+            ice_rich = soil & land & (Z >= cfg["z_ice_rich"])
+            m.phi_s[soil] = cfg["phi_s_sediment"]
+            m.phi_s[ice_rich] = cfg["phi_s_ice_rich"]
         m.phi_h2o[soil] = 1.0 - m.phi_s[soil]
         m.set_salinity(cfg["S_sea"], soil & ~land)
         water = ~soil & (Z < wl0)
         m.phi_h2o[water] = 1.0
         m.set_salinity(cfg["S_sea"], water)
-        T0 = m.steady_state(T_air=cfg["T_land_mean"], T_water=cfg["T_seabed_mean"])
+        if cfg["initial_state"] == "era5_soil":
+            # v1.0's initial profile: ERA5 soil levels at the start, by depth below the local bed,
+            # constant below the centre of level 4 (the same profile for wet and dry points)
+            row = sim.forcing_data.iloc[0]
+            d_pts = [0.0, 0.035, 0.175, 0.64, 1.945]
+            T_pts = [row[f"soil_temperature_level_{k}"] - 273.15 for k in (1, 1, 2, 3, 4)]
+            T0 = np.interp(np.maximum(depth, 0.0), d_pts, T_pts)
+        else:
+            T0 = m.steady_state(T_air=cfg["T_land_mean"], T_water=cfg["T_seabed_mean"])
         T0 = np.where(water, float(mat.freezing_point(cfg["S_sea"])) + 0.05, T0)
         m.set_temperature(T0)
 

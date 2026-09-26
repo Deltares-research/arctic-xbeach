@@ -5,8 +5,8 @@ storm of 1-2 August triggers XBeach).
 Checks: every XBeach call succeeds, the energy budget of the 2DV model closes including the
 morphology term, and the bed handed to XBeach follows the 2DV state.
 
-Outputs (in examples/2dv/output/coupled/): coupled_test.png, coupled_test_summary.txt; the run
-folder holds results/thermal2dv.nc and the XBeach runs.
+Outputs (in examples/2dv/output/coupled/): <case>.png, <case>_summary.txt; the run folder holds
+results/thermal2dv.nc and the XBeach runs.
 """
 import sys
 import time
@@ -19,7 +19,8 @@ import xarray as xr
 # === CONFIGURATION ===
 SCRIPT_DIR = Path(__file__).resolve().parent
 PROJ_DIR = SCRIPT_DIR.parents[2]                       # worktree root (contains main.py)
-CASE_DIR = SCRIPT_DIR / "barter_2dv_test"
+CASE_NAME = sys.argv[1] if len(sys.argv) > 1 else "barter_2dv_test"  # or "barter_2dv_matched" (v1.0 soil and start)
+CASE_DIR = SCRIPT_DIR / CASE_NAME
 OUT_DIR = PROJ_DIR / "examples" / "2dv" / "output" / "coupled"
 PLOT_ONLY = False                                      # redraw from the run folder without rerunning
 
@@ -66,7 +67,7 @@ def summarise(result_dir, lines):
     txt = "\n".join(lines)
     print(txt)
     OUT_DIR.mkdir(parents=True, exist_ok=True)
-    (OUT_DIR / "coupled_test_summary.txt").write_text(txt + "\n", encoding="utf-8")
+    (OUT_DIR / f"{CASE_NAME}_summary.txt").write_text(txt + "\n", encoding="utf-8")
     return ds
 
 
@@ -87,7 +88,7 @@ def plot(ds):
     axes[1].legend(loc="lower right")
     axes[1].set_xlabel("x (m)")
     fig.colorbar(m, ax=axes, label="T (°C)", shrink=0.8)
-    fig.savefig(OUT_DIR / "coupled_test.png", dpi=150)
+    fig.savefig(OUT_DIR / f"{CASE_NAME}.png", dpi=150)
 
 
 if __name__ == "__main__":

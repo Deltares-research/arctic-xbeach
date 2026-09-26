@@ -1,17 +1,20 @@
 # 2DV water–soil–ice thermal model: demonstrations
 
-First, standalone version of `arctic_xbeach/thermal2dv` (branch `2DV-redesign`). The design and
-the literature behind it are in `docs/2dv_design.md`. The model is not yet coupled to XBeach or to
-`main.py`; the 1D v1.0 model is untouched.
+The 2DV model `arctic_xbeach/thermal2dv` (branch `2DV-redesign`). It runs standalone (demos 1–4)
+or as the thermal module of Arctic-XBeach with `thermal.model: "2dv"` in the run config (see
+*Coupling with XBeach* below; `"1d"` keeps the v1.0 enthalpy columns). The design and the
+literature behind it are in `docs/2dv_design.md`.
 
 Run from the repository root with the project environment:
 
 ```bash
-python -m pytest tests/test_thermal2dv.py        # verification, 12 tests, ~25 s
+python -m pytest tests                           # 42 tests (thermal, radiation, coupling, ERA5), ~40 s
 python examples/2dv/run_analytical_suite.py      # analytical figure, ~1 min
 python examples/2dv/run_flume_block.py           # ~45 s
 python examples/2dv/run_bluff_niche.py           # ~1.5 min
 python examples/2dv/run_barter_transect.py       # ~20 min for one year
+python examples/2dv/run_radiation_demo.py        # ~30 min, two runs in parallel
+python examples/2dv/coupled/run_coupled_test.py  # coupled with XBeach, ~40 min (needs the XBeach executable)
 ```
 
 Each script has a `# === CONFIGURATION ===` block at the top and writes a NetCDF file plus figures
@@ -37,6 +40,13 @@ to `examples/2dv/output/<case>/` (`*.nc` is git-ignored; the PNGs are committed)
 - **Surface energy balance.** One balance for water, ice and land faces: absorbed shortwave,
   longwave in/out and bulk sensible heat. The half-cell conduction to the cell centre is included
   through the surface temperature.
+- **Radiation geometry** (`radiation.py`, on when the site is set in `Settings`: latitude,
+  longitude, start time in UTC and the bearing the seaward faces look to). Each air-exposed face
+  (up, down = overhang underside, seaward, landward) gets the direct beam with cast shadows, the
+  diffuse sky it sees (sky-view factor, 2D crossed strings) and terrain-reflected light; only the
+  sky-visible fraction exchanges longwave with the sky. The sun comes from UTC and longitude, so
+  there is no time-zone parameter. Without a site, the legacy rule applies (vertical faces get
+  0.5 × SW and see the whole sky).
 - **Boundaries.** Geothermal flux at the base (60 mW m⁻²); zero flux on the landward and offshore
   soil boundaries.
 - **Bluff melt.** Faces between water and soil or ice carry a boundary-layer resistance 1/h
@@ -52,7 +62,21 @@ to `examples/2dv/output/<case>/` (`*.nc` is git-ignored; the PNGs are committed)
 - **Bookkeeping.** Energy is tracked for every step and every fraction change. Across all demos the
   budget closes to better than 1e-8 of the net exchange.
 
-## Verification (`tests/test_thermal2dv.py`, 12 tests, all passing)
+## Verification (`tests/`, 42 tests, all passing)
+
+`test_thermal2dv.py` (12) is the table below. `test_radiation.py` (16) checks:
+- solar noon elevation and azimuth at Barter for the solstices and the equinox (±0.15°);
+- solar noon time from longitude;
+- the Erbs split;
+- sky-view factors against analytic values for a wall, flat ground beside a wall ((1 + cos h)/2), a
+  canyon floor and a niche back wall (±0.005);
+- shadow length H/tan α_p;
+- a 20° staircase slope against the tilted plane over a day (2%);
+- flat ground reproducing the legacy result to 1e-9 K;
+- the energy budget with geometry on;
+- the absorbed SW of a north- and a south-facing bluff.
+
+`test_coupling.py` (12) and `test_era5_forcing.py` (2) are described under *Coupling with XBeach*.
 
 `run_analytical_suite.py` draws eight of them against their analytic solution in one figure
 (`output/analytical/analytical_suite.png`, numbers in `analytical_suite.txt`).
@@ -146,6 +170,28 @@ Figures: `barter_snapshots.png` (temperature and phase at six dates), `barter_fu
 thaw depth, nearshore water temperature and ice thickness) and `barter_salinity.png` (bulk
 salinity in March and at the surge, and salinity of the water and sea ice through the year).
 
+## Demo 4: radiation geometry on the Barter bluff (`run_radiation_demo.py`)
+
+Demo 3's transect is run for one synthetic year twice. The shortwave now follows the real sun
+path at Barter (70.13° N, 143.66° W). The bluff faces north (bearing 1.86°, from v1.0's
+`grid_orientation` of 88.14° counter-clockwise from east), and on this grid it is a ~45°
+staircase, not a vertical wall.
+
+| Jun–Aug mean absorbed SW | legacy (0.5 × SW on vertical faces) | geometry |
+|---|---|---|
+| Bluff slope (per m² of slope) | 185 W m⁻² | 147 W m⁻² (−21%) |
+| Beach below the bluff | 154 W m⁻² | 144 W m⁻² (−6%, shaded) |
+| Tundra | 174 W m⁻² | 174 W m⁻² |
+
+At the end of August, the surface cells of the face and the beach toe end up as much as ~1.5 K
+colder with geometry. The erosion of the year barely changes (3.11 vs 3.15 m³ m⁻¹; two block
+failures in both), because in this setup the bluff retreats by thermal abrasion during the
+August surge, not by thermal denudation. Clear-sky direct beam on a vertical north face at 70° N
+is 0.25 (June) to 0.00 (September) of flat ground, so a fixed 0.5 overheats north-facing
+bluffs, more so as the season goes on.
+
+Figure: `output/radiation_demo/radiation_demo.png`.
+
 ## Comparison with the v1.0 1D model (`compare_1d/`)
 
 The same flat, dry silt column at Barter Island (φ_s = 0.6, φ_H₂O = 0.4, 10 m deep) is run for
@@ -163,12 +209,18 @@ python examples/2dv/compare_1d/run_v10_column_barter_latent.py    # v1.0 with th
 python examples/2dv/compare_1d/run_compare_1d.py                  # 2DV column, v1.0 scheme replicas, figure
 ```
 
-| | v1.0 | 2DV | v1.0 scheme, conservative flux form |
+| | v1.0 as published (`conduction_form: nodal`) | 2DV | v1.0 fixed (`conduction_form: flux`, now the default) |
 |---|---|---|---|
 | Maximum thaw depth | 1.16 m | 0.94 m | 0.90 m |
 | Refreeze of the thawed layer | day 330 | day 312 | day 311 |
-| Energy budget error after one year | +136 MJ m⁻² | 1e-9 MJ m⁻² | — |
-| Wall time (thermal part) | 179 s (dt = 120 s) | 60 s (dt = 1 h) | — |
+| Energy budget error after one year | +136 MJ m⁻² | 1e-9 MJ m⁻² | 4e-5 MJ m⁻² |
+| Wall time (thermal part) | 179 s (dt = 120 s) | 60 s (dt = 1 h) | 208 s |
+
+The flux form is now in v1.0 itself (`thermal.conduction_form`, harmonic face k, half-cell
+boundary nodes); 2DV and fixed v1.0 differ by 0.03 K RMS at 1 m depth. The latent heat is now
+`L_water_ice` in J/kg (values > 1e6 are read as the old convention, with a warning;
+`latent_heat_legacy: true` reproduces v1.0). On the Stefan test the fixed v1.0 thaws to 3.322 m
+against 3.324 m analytic (legacy 2.819 m).
 
 - **Why they differ.** v1.0 updates each node with its own k times the discrete Laplacian,
   k ∂²T/∂z², instead of the flux form ∂/∂z(k ∂T/∂z).
@@ -190,8 +242,9 @@ depth, the 2DV − v1.0 temperature difference and the energy budget error.
 
 ## Limitations of this first version
 
-- **Not yet coupled to XBeach.** Non-ice-rich sediment never moves, and there is no wave-dependent
-  h: a constant h is used everywhere.
+- **Coupling is new and unvalidated.** Only the short Barter test has been run. h between storms
+  is the constant background value, and the Kobayashi h is a flume formula, so its field scale
+  still needs Barter data.
 - **No snow, latent heat flux or organic layer on land.** Winter ground is too cold, and the active
   layer is set only by the mineral/ice mix.
 - **Salt is simplified.** The liquidus is linear. Brine drainage is a relaxation, not a
@@ -202,4 +255,8 @@ depth, the 2DV − v1.0 temperature difference and the energy budget error.
 - **Staircase geometry.** Bed and bluff are resolved as whole cells. Flooding ignores connectivity,
   so a tide rising above an ice lid floods the air cells above it.
 - **Block failure is a geometric rule** (niche depth > d_crit), not a stability calculation.
-- **Forcing is synthetic.** Nothing here is calibrated or validated against Barter observations yet.
+- **Forcing.** The standalone demos use synthetic forcing. The ERA5 adapter (`era5_forcing`) is
+  ready, and the ERA5 point download for Barter is queued at the CDS. Nothing is calibrated or
+  validated against Barter observations yet.
+- **Radiation.** The sky is isotropic (no Perez circumsolar term), and the terrain seen by a face
+  is taken to be at the face's own temperature for longwave.

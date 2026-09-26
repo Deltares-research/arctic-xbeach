@@ -386,6 +386,75 @@ ice cell that melts part-way through the step therefore ends up above its meltin
 
 ---
 
+### 8.3 As implemented: radiation geometry (September 2026)
+
+`thermal2dv/radiation.py`.
+
+- **Sun position.** NOAA general solar-position equations (Spencer series for the declination
+  and the equation of time), computed from UTC and longitude. There is no time-zone parameter;
+  v1.0 used UTC−8 for Alaska.
+- **Direct/diffuse split.** The Erbs et al. (1982) diffuse fraction, unless the forcing provides
+  the direct beam itself (ERA5 `fdir`).
+- **Face inventory.** Every air-exposed face of an active cell is classed by direction: up, down
+  (overhang undersides), seaward and landward.
+- **Ray casting.** Rays in the x–z plane are tested column by column against the active cells.
+  This is exact for the staircase grid, overhangs included. A ray below the horizon counts as
+  blocked, since the terrain continues beyond the domain.
+- **Face sampling.** Each face is sampled at 4 points. This resolves partial shading of staircase
+  treads, and a staircase slope then reproduces a tilted plane's daily direct beam to 2%.
+- **Sky-view factor.** In 2D the SVF is Σ(sin θ₂ − sin θ₁)/2 over the escaping directions (36 by
+  default).
+- **Absorbed shortwave per face.** The step-averaged direct factor (sun sampled every 30 min,
+  weighted by a clear-sky beam) × direct, plus SVF × diffuse, plus (1 − SVF) × albedo × global.
+- **Longwave.** Only the SVF fraction exchanges with the sky; the terrain seen is assumed to be at
+  the face's own temperature.
+- **Cost.** The geometry is cached per active mask, and the Barter step cost rises from about 0.5
+  to 0.6 s.
+
+### 8.4 As implemented: coupling with XBeach (September 2026)
+
+`thermal2dv/coupling.py` (Thermal2DVCoupler) and `thermal2dv_driver.py`, dispatched from
+`main.py` when `thermal.model: "2dv"`. XBeach owns waves, water levels and the transport of
+unfrozen sediment; the 2DV model owns heat, salt, ice, ablation and block failure.
+
+- **2DV → XBeach.**
+  - The bed is the top envelope of the soil, so the niche under an overhang exists only in the
+    2DV model.
+  - ne_layer is the thickness from the bed down to the first soil cell that is not fully thawed.
+    A frozen overhang or a fallen frozen block therefore gives ne = 0, and toe armouring emerges
+    on its own.
+  - Offshore of the 2DV grid, XBeach keeps its own bed with `ne_offshore` (10 m).
+- **XBeach → 2DV, bed change.**
+  - Each column carries a sub-cell bed offset. Whole cells are added (beach sediment, n = 0.4, at
+    the temperature of the water or the surface they land on) or removed (replaced by sea water
+    below the water level, air above it) when the offset passes ±dz/2.
+  - XBeach therefore gets the exact bed, the thermal state never holds partly filled cells, and
+    the thermal bed stays within dz/2 of the true bed.
+  - A removal that would cut into frozen ground is refused and logged as `unapplied`.
+  - The energy and salt of these changes form the `morphology` budget term. The coupled Barter
+    test closes the budget to 1e-12 of the net exchange.
+- **Released bluff mineral.** Mineral from ablated ice-rich cells goes to the toe as loose beach
+  sediment, over 5 m seaward of the most seaward dry column.
+- **Storm hydrodynamics.**
+  - On the 2DV path, XBeach writes time-mean zs and H (`nmeanvar`, `tintm` = run length). One
+    global snapshot per hour was far too coarse for swash statistics.
+  - The wetted fraction is P(zs > zb + 1 cm) for a Gaussian zs.
+  - The 2DV water level during a storm is the highest bed wetted at least 10% of the time.
+  - h per column is f_wet × clip(Kobayashi et al. 1999, 50–10⁴ W m⁻² K⁻¹) × a calibration
+    factor.
+  - Between storms h is the background value (500).
+- **Grids.** XBeach nodes and 2DV columns are both treated as piecewise-constant cells and
+  remapped with overlap weights, which conserves volume. The 2DV grid is fixed, with a 60 m fine
+  window (0.5 × 0.25 m) from 45 m seaward to 15 m landward of the crest.
+- **Time coupling.** v1.0's event logic is unchanged (R2% + WL threshold, sea-ice gate, weekly
+  inter-storm call). The 2DV model steps once per wrapper hour.
+- **Open points.**
+  - XBeach hotstarts during a storm carry XBeach's own bed, so 2DV ablation within a storm reaches
+    XBeach only at the next cold start.
+  - The first calm XBeach call avalanches the schematized Barter bluff (slope 1 vs `dryslp` 0.6).
+  - The Kobayashi h is ~10⁴ W m⁻² K⁻¹ in the swash, 20× the v1.0 constant, so the calibration
+    factor matters and needs Barter data.
+
 ## 9. Key risks
 
 1. **Field-scale h controls everything at the face.** Plausible values span 250 to more than 10⁴ W m⁻² K⁻¹, and lab-to-field transfer is untested. Above a few hundred, retreat is limited by contact time and matrix removal, so put effort into the wet/dry timing and removal rules as much as into h. Make h the first sensitivity parameter.

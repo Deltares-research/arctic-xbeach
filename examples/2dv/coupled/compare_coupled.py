@@ -20,7 +20,8 @@ from arctic_xbeach.thermal2dv import plotting as pl  # noqa: E402
 
 # === CONFIGURATION ===
 HERE = Path(__file__).resolve().parent
-RUN_2DV = HERE / "barter_2dv_test" / "results"
+CASE_2DV = sys.argv[1] if len(sys.argv) > 1 else "barter_2dv_matched"  # or "barter_2dv_test" (2DV soil, steady start)
+RUN_2DV = HERE / CASE_2DV / "results"
 RUN_1D = HERE / "barter_1d_test" / "results"
 OUT_DIR = PROJ_DIR / "examples" / "2dv" / "output" / "coupled"
 NE_DATE = np.datetime64("2015-08-01T12:00")   # ne_layer snapshot before the storm
@@ -66,12 +67,12 @@ def main():
     lines = [f"XBeach calls: 1D {len(tx1)}, 2DV {len(tx2)}",
              f"volume eroded above z = 0 by XBeach: 1D {v1[-1] if len(v1) else 0:.2f} m3/m, "
              f"2DV {v2[-1] if len(v2) else 0:.2f} m3/m (2DV ablation adds {d2.eroded_sediment.values[-1]:.2f} m3/m of mineral)"]
-    win = (x1 > X_WINDOW[0]) & (x1 < X_WINDOW[1])
-    lines.append(f"ne_layer on {str(NE_DATE)[:10]} in the window: 1D mean {ne1[win].mean():.2f} m (max {ne1[win].max():.2f}), "
+    win = (x1 > X_WINDOW[0]) & (x1 < X_WINDOW[1]) & (zgr1[0] > 0.0)  # above the water line
+    lines.append(f"ne_layer on {str(NE_DATE)[:10]} above z = 0 in the window: 1D mean {ne1[win].mean():.2f} m (max {ne1[win].max():.2f}), "
                  f"2DV mean {ne2[win].mean():.2f} m (max {ne2[win].max():.2f})")
     txt = "\n".join(lines)
     print(txt)
-    (OUT_DIR / "compare_coupled_summary.txt").write_text(txt + "\n", encoding="utf-8")
+    (OUT_DIR / f"compare_{CASE_2DV}_summary.txt").write_text(txt + "\n", encoding="utf-8")
 
     pl.apply_style()
     fig, axes = plt.subplots(2, 2, figsize=(13, 8.5), constrained_layout=True)
@@ -112,8 +113,8 @@ def main():
     ax.set_facecolor("0.93")
     fig.colorbar(m, ax=ax, label="T, 2DV, end (°C)")
     ax.text(0.02, 0.92, "(d)", transform=ax.transAxes)
-    fig.savefig(OUT_DIR / "compare_coupled.png", dpi=150)
-    print(f"wrote {OUT_DIR / 'compare_coupled.png'}")
+    fig.savefig(OUT_DIR / f"compare_{CASE_2DV}.png", dpi=150)
+    print(f"wrote {OUT_DIR / f'compare_{CASE_2DV}.png'}")
 
 
 if __name__ == "__main__":
