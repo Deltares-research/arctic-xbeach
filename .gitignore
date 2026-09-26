@@ -217,3 +217,6 @@ examples/2dv/compare_1d/analytical_runs/
 examples/2dv/compare_1d/_log_*.txt
 examples/2dv/compare_1d/_prev_outputs/
 examples/2dv/compare_1d/*/xb_files/
+examples/2dv/coupled/*/results/
+examples/2dv/coupled/*/run.log
+examples/2dv/coupled/*/storms_dry.csv

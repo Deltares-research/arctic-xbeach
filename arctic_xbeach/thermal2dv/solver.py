@@ -102,19 +102,21 @@ class Settings:
     max_halvings: int = 6             # time-step halvings allowed when an iteration does not converge
 
 
-def _face_terms(P, N, d_p, d_n, k_p, k_n, area, p, H, h):
+def _face_terms(P, N, d_p, d_n, k_p, k_n, area, p, H, h_p, h_n):
     """Conductance of the faces between cells P and N (index tuples), and which of them are
-    clamped melting faces (see module docstring).
+    clamped melting faces (see module docstring). h_p, h_n: water -> solid heat transfer
+    coefficient in the columns of P and N; a water-solid face takes the solid cell's value.
 
-    Returns G (series conductance), the clamp mask, which side is solid, and the solid's
-    (bulk) freezing point."""
+    Returns G (series conductance), the clamp mask, which side is solid, the solid's (bulk)
+    freezing point and h per face."""
     r_p = 0.5 * d_p / k_p
     r_n = 0.5 * d_n / k_n
     fl_p, fl_n = p.fluid[P], p.fluid[N]
     interface = fl_p ^ fl_n
+    solid_is_p = interface & ~fl_p
+    h = np.where(solid_is_p, h_p, h_n)
     G = area / (r_p + r_n + np.where(interface, 1.0 / h, 0.0))
 
-    solid_is_p = interface & ~fl_p
     T_s = np.where(solid_is_p, p.T[P], p.T[N])
     T_w = np.where(solid_is_p, p.T[N], p.T[P])
     Tf_s = np.where(solid_is_p, p.Tf[P], p.Tf[N])
@@ -122,7 +124,7 @@ def _face_terms(P, N, d_p, d_n, k_p, k_n, area, p, H, h):
     r_s = np.where(solid_is_p, r_p, r_n)
     T_face = T_s + (T_w - T_s) * r_s / (r_s + 1.0 / h)
     clamp = interface & below_liquidus & (T_w > Tf_s) & (T_face >= Tf_s)
-    return G, clamp, solid_is_p, Tf_s
+    return G, clamp, solid_is_p, Tf_s, h
 
 
 class Model2DV:
@@ -143,6 +145,8 @@ class Model2DV:
         self.collapse_events = []
         self.last_step = {}
         self._geometry_cache = {}   # active-mask bytes -> radiation.Geometry (small LRU)
+        self.h_water_x = None       # optional water -> solid heat transfer coefficient per column [W m-2 K-1]
+                                    # (set by the XBeach coupler); None uses Settings.h_water everywhere
         self._step_window = (0.0, 0.0)
 
     # ------------------------------------------------------------------ state
@@ -255,6 +259,8 @@ class Model2DV:
         idx = -np.ones(g.shape, dtype=int)
         idx[act] = np.arange(n)
         kx, kz = self._conductivities(p)
+        # water -> solid heat transfer coefficient per column (wave-dependent when coupled to XBeach)
+        h_col = np.full(g.nx, s.h_water) if self.h_water_x is None else np.asarray(self.h_water_x, dtype=float)
 
         rows, cols, vals = [], [], []
         a_face = np.zeros(n)
@@ -266,7 +272,8 @@ class Model2DV:
             *[((jj, ii), (jj + 1, ii), g.dz[jj], g.dz[jj + 1], kz, g.dx[ii])
               for jj, ii in [np.nonzero(act[:-1, :] & act[1:, :])]],
         ):
-            G, clamp, solid_is_p, Tf_s = _face_terms(P, N, d_p, d_n, k[P], k[N], area, p, self.H, s.h_water)
+            G, clamp, solid_is_p, Tf_s, h = _face_terms(P, N, d_p, d_n, k[P], k[N], area, p, self.H,
+                                                        h_col[P[1]], h_col[N[1]])
             a, b = idx[P], idx[N]
             # ordinary faces: symmetric conductance
             o = ~clamp
@@ -274,7 +281,7 @@ class Model2DV:
             cols += [a[o], b[o], b[o], a[o]]
             vals += [G[o], G[o], -G[o], -G[o]]
             # clamped melting faces: flux h A (T_w - Tf) from the water cell into the solid cell
-            Gc = (area * s.h_water)[clamp]
+            Gc = (area * h)[clamp]
             i_s = np.where(solid_is_p, a, b)[clamp]
             i_w = np.where(solid_is_p, b, a)[clamp]
             rows += [i_s, i_w]
@@ -474,7 +481,8 @@ class Model2DV:
         self.H[act] = Hk
         self.last_step = dict(iterations=info["iterations"], dt=dt, energy_in=info["energy_in"],
                               energy_change=info["energy_change"],
-                              energy_residual=info["energy_change"] - info["energy_in"])
+                              energy_residual=info["energy_change"] - info["energy_in"],
+                              sw_faces=self._sw_faces, q_sw_water=float(np.sum(self._q_sw_water)))
         return True
 
     def _solve_pass(self, dt, F, not_fluid):
@@ -489,6 +497,8 @@ class Model2DV:
 
         # fixed sources and linear exchanges: flux into a cell = a - g * T
         q_vol, sw, svf = self._shortwave(p, F)
+        self._sw_faces = {k: sw[k] * ex.A[k] for k in sw}  # diagnostics: shortwave absorbed on each face and
+        self._q_sw_water = q_vol                            # in the water column [W per m alongshore]
         a_const = q_vol[act] + ex.a_face
         q_geo = np.zeros(g.shape)
         q_geo[0, :] = s.q_geo * g.dx

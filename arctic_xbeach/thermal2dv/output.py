@@ -38,11 +38,12 @@ class Recorder:
         V = m.grid.volume
         self.series["time"].append(m.time)
         self.series["energy_domain"].append(m.total_energy())
-        for key in ("boundary", "wetdry", "erosion", "collapse"):
-            self.series[f"energy_{key}"].append(m.energy[key])
+        # every budget term the model keeps (the XBeach coupler adds "morphology")
+        for key, v in m.energy.items():
+            self.series.setdefault(f"energy_{key}", []).append(v)
         self.series["salt_domain"].append(m.total_salt())
-        for key in ("relaxation", "wetdry", "erosion", "collapse"):
-            self.series[f"salt_{key}"].append(m.salt_exchange[key])
+        for key, v in m.salt_exchange.items():
+            self.series.setdefault(f"salt_{key}", []).append(v)
         self.series["eroded_sediment"].append(m.eroded_sediment)
         self.series["ice_volume"].append(float(np.sum(V * m.phi_h2o * (1.0 - p.f_liq) * p.active)))
         self.series["iterations"].append(m.last_step.get("iterations", 0))

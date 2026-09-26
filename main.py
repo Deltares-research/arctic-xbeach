@@ -209,12 +209,18 @@ def main(sim, print_to_screen=True):
         logger.error(f"Failed to check R2% criteria: {e}")
         return_code = 2
 
-    # initialize thermal model
-    sim.initialize_thermal_module()
+    # initialize thermal model: v1.0 1D module or the 2DV model (thermal.model: "1d" | "2dv")
+    use_2dv = str(sim.config.thermal.get("model", "1d")).lower() == "2dv"
+    if use_2dv:
+        from arctic_xbeach.thermal2dv_driver import Thermal2DVDriver
+        thermal2dv = Thermal2DVDriver(sim)
+        thermal2dv.initialize()
+    else:
+        sim.initialize_thermal_module()
     logger.debug("Successfully initialized thermal module")
     
-    # initialize solar flux calculator
-    if sim.config.thermal.with_solar_flux_calculator:
+    # initialize solar flux calculator (1D only; the 2DV model has its own radiation geometry)
+    if sim.config.thermal.with_solar_flux_calculator and not use_2dv:
         sim.initialize_solar_flux_calculator(
             sim.config.model.time_zone_diff,
             angle_min=sim.config.thermal.angle_min,
@@ -226,7 +232,8 @@ def main(sim, print_to_screen=True):
     logger.debug("Successfully initialized solar flux calculator")
     
     # show CFL values (they have already been checked to be below 0.5)
-    logger.debug(f"Current maximum CFL {np.max(sim.cfl_matrix):.4f}")
+    if not use_2dv:
+        logger.debug(f"Current maximum CFL {np.max(sim.cfl_matrix):.4f}")
 
     # Get spin-up time in years (default 0)
     spinup_years    = getattr(sim.config.model, 'spin_up_time', 0)
@@ -314,7 +321,9 @@ def main(sim, print_to_screen=True):
                     sim.xbeach_times[timestep_id + 1] = 0
             
             # Update grid with new morphology (only if XBeach succeeded)
-            if run_successful:
+            if run_successful and use_2dv:
+                thermal2dv.update_grid(timestep_id, fp_xbeach_output="xboutput.nc")
+            elif run_successful:
                 sim.update_grid(timestep_id, fp_xbeach_output="xboutput.nc")
             else:
                 logger.warning(f"Grid update skipped for timestep {timestep_id} - XBeach did not complete successfully")
@@ -322,19 +331,23 @@ def main(sim, print_to_screen=True):
         # ---------------------------------------------------------------------
         # Thermal Model Updates
         # ---------------------------------------------------------------------
-        for subgrid_timestep_id in np.arange(0, config.model.timestep * 3600, config.thermal.dt):
-            sim.thermal_update(timestep_id, subgrid_timestep_id)
-        sim.find_thaw_depth()
+        if use_2dv:
+            thermal2dv.step(timestep_id)
+            thermal2dv.find_thaw_depth()
+        else:
+            for subgrid_timestep_id in np.arange(0, config.model.timestep * 3600, config.thermal.dt):
+                sim.thermal_update(timestep_id, subgrid_timestep_id)
+            sim.find_thaw_depth()
 
         # ---------------------------------------------------------------------
         # Output Generation
         # ---------------------------------------------------------------------
-        if timestep_id in sim.temp_output_ids:
+        if timestep_id in sim.temp_output_ids and not use_2dv:
             sim.write_output(timestep_id, t_start)
             logger.debug("Successfully generated output")
 
         # Optional ground temperature validation output
-        if 'save_ground_temp_layers' in sim.config.output.keys():
+        if 'save_ground_temp_layers' in sim.config.output.keys() and not use_2dv:
             sim.save_ground_temp_layers_in_memory(
                 timestep_id, 
                 layers=sim.config.output.save_ground_temp_layers,
@@ -357,6 +370,8 @@ def main(sim, print_to_screen=True):
     logger.info(f"Total simulation time: {(time.time() - t_start) / 3600:.1f} hours")
     
     # Cleanup and finalization
+    if use_2dv:
+        thermal2dv.finalize()
     if sim.nc_writer is not None:
         sim.nc_writer.close()
 
