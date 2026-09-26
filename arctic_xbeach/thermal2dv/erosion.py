@@ -119,11 +119,20 @@ def solid_mask(model):
 
 def undercut_columns(model):
     """Columns with an open gap (water or air; ice too unless it is itself solid) under a solid
-    overhang, and the extent of that gap.
+    overhang, and the largest niche depth among the connected niches (see undercut_components).
 
-    Returns a list of (i, j_gap_bottom, j_gap_top) and the summed width of those columns,
-    i.e. the niche depth."""
-    s, g = model.s, model.grid
+    Returns a list of (i, j_gap_bottom, j_gap_top) for all undercut columns and that depth."""
+    comps = undercut_components(model)
+    found = [c for cols, _ in comps for c in cols]
+    return found, max((d for _, d in comps), default=0.0)
+
+
+def undercut_components(model):
+    """Connected niches: runs of neighbouring undercut columns whose gaps overlap in z. Each
+    niche is returned as (columns, depth), with columns a list of (i, j_gap_bottom, j_gap_top)
+    and depth the summed width of its columns. Separate notches are separate niches, so two
+    subcritical notches never add up to a failure."""
+    g = model.grid
     soil = solid_mask(model)
     found = []
     for i in range(g.nx):
@@ -139,27 +148,63 @@ def undercut_columns(model):
         while j_gap_bot > 0 and not soil[j_gap_bot - 1, i]:
             j_gap_bot -= 1
         found.append((i, j_gap_bot, j_gap_top))
-    depth = float(sum(g.dx[i] for i, _, _ in found))
-    return found, depth
+    comps = []
+    for c in found:
+        if comps:
+            i0, jb0, jt0 = comps[-1][-1]
+            if c[0] == i0 + 1 and c[1] <= jt0 and jb0 <= c[2]:  # adjacent column, gaps overlap
+                comps[-1].append(c)
+                continue
+        comps.append([c])
+    return [(cols, float(sum(g.dx[i] for i, _, _ in cols))) for cols in comps]
+
+
+def _drop_column(model, i, jb, jt, j_top):
+    """Lower the solid stack jt+1..j_top of column i by the gap height onto ze[jb].
+
+    Extensive contents (V phi_s, V phi_h2o, V salt, V H) are remapped by geometric overlap,
+    so mineral, H2O, salt and energy are conserved on a stretched grid; the stack's top cell
+    may end up partly filled (the rest air). The gap's own contents (niche water or air) are
+    displaced and returned as (energy, salt) leaving the domain."""
+    g = model.grid
+    ze = g.ze
+    V = g.volume[:, i]
+    arrays = (model.phi_s, model.phi_h2o, model.salt, model.H)
+    gap = slice(jb, jt + 1)
+    displaced = (float(np.sum(V[gap] * model.H[gap, i])), float(np.sum(V[gap] * model.salt[gap, i])))
+    G = ze[jt + 1] - ze[jb]
+    rows = np.arange(jb, j_top + 1)
+    new = [np.zeros(len(rows)) for _ in arrays]
+    for k in range(jt + 1, j_top + 1):
+        a, b = ze[k] - G, ze[k + 1] - G
+        ov = np.maximum(np.minimum(b, ze[rows + 1]) - np.maximum(a, ze[rows]), 0.0) / (b - a)
+        for n, arr in zip(new, arrays):
+            n += ov * V[k] * arr[k, i]
+    for n, arr in zip(new, arrays):
+        arr[rows, i] = n / V[rows]
+    tiny = (model.phi_s[rows, i] + model.phi_h2o[rows, i]) < 1e-9
+    for arr in arrays:
+        arr[rows[tiny], i] = 0.0
+    return displaced
 
 
 def collapse_overhang(model):
-    """Drop every overhang into its niche once the niche depth exceeds d_crit."""
-    s, g = model.s, model.grid
-    cols, depth = undercut_columns(model)
-    if depth < s.d_crit or not cols:
+    """Drop each overhang into its niche once that niche is deeper than d_crit. The block
+    keeps its mineral, H2O, salt and enthalpy; the niche water it displaces leaves the domain
+    and is the only exchange logged under "collapse"."""
+    s = model.s
+    comps = [(cols, d) for cols, d in undercut_components(model) if d >= s.d_crit]
+    if not comps:
         return False
-
     solid = solid_mask(model)
-    e_before = model.total_energy()
-    salt_before = model.total_salt()
-    for i, jb, jt in cols:
-        n = jt - jb + 1
-        j_top = np.nonzero(solid[:, i])[0].max()
-        for arr in (model.phi_s, model.phi_h2o, model.salt, model.H):
-            arr[jb:j_top + 1 - n, i] = arr[jt + 1:j_top + 1, i]
-            arr[j_top + 1 - n:j_top + 1, i] = 0.0  # the space vacated at the top becomes air
-    model.energy["collapse"] += model.total_energy() - e_before
-    model.salt_exchange["collapse"] += model.total_salt() - salt_before
-    model.collapse_events.append(dict(time=model.time, niche_depth=depth, columns=[c[0] for c in cols]))
+    for cols, depth in comps:
+        e_out = salt_out = 0.0
+        for i, jb, jt in cols:
+            j_top = np.nonzero(solid[:, i])[0].max()
+            e, sl = _drop_column(model, i, jb, jt, j_top)
+            e_out += e
+            salt_out += sl
+        model.energy["collapse"] -= e_out
+        model.salt_exchange["collapse"] -= salt_out
+        model.collapse_events.append(dict(time=model.time, niche_depth=depth, columns=[c[0] for c in cols]))
     return True

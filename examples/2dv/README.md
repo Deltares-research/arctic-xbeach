@@ -8,7 +8,7 @@ literature behind it are in `docs/2dv_design.md`.
 Run from the repository root with the project environment:
 
 ```bash
-python -m pytest tests                           # 42 tests (thermal, radiation, coupling, ERA5), ~40 s
+python -m pytest tests                           # 57 tests (thermal, radiation, coupling, ERA5, review fixes), ~40 s
 python examples/2dv/run_analytical_suite.py      # analytical figure, ~1 min
 python examples/2dv/run_flume_block.py           # ~45 s
 python examples/2dv/run_bluff_niche.py           # ~1.5 min
@@ -62,7 +62,7 @@ to `examples/2dv/output/<case>/` (`*.nc` is git-ignored; the PNGs are committed)
 - **Bookkeeping.** Energy is tracked for every step and every fraction change. Across all demos the
   budget closes to better than 1e-8 of the net exchange.
 
-## Verification (`tests/`, 42 tests, all passing)
+## Verification (`tests/`, 57 tests, all passing)
 
 `test_thermal2dv.py` (12) is the table below. `test_radiation.py` (16) checks:
 - solar noon elevation and azimuth at Barter for the solstices and the equinox (±0.15°);
@@ -77,6 +77,20 @@ to `examples/2dv/output/<case>/` (`*.nc` is git-ignored; the PNGs are committed)
 - the absorbed SW of a north- and a south-facing bluff.
 
 `test_coupling.py` (12) and `test_era5_forcing.py` (2) are described under *Coupling with XBeach*.
+
+`test_review_fixes.py` (15) covers the findings of the code review of 26 September 2026. Each of
+these tests fails on the code before the fix.
+- **Collapse is conservative on stretched grids.** Mineral, H2O, salt and energy are remapped by
+  geometric overlap. Only the niche water the block displaces is logged as an exchange.
+- **Niches are connected components.** Two separate subcritical notches no longer add up to one
+  failure.
+- **`stretched_edges` stays in the domain.** Edges hit the requested bounds exactly, also for
+  empty, narrow or clipped fine bands.
+- **Brine drains only from ice attached to the water column below.** Liquid pockets higher up
+  keep their salt.
+- **A failed step is atomic.** State and budgets are restored before the exception.
+- **Suspended blocks.** A block in air exchanges heat through all four faces, underside included.
+- **`Recorder`** requires exactly one of `every` or `times`.
 
 `run_analytical_suite.py` draws eight of them against their analytic solution in one figure
 (`output/analytical/analytical_suite.png`, numbers in `analytical_suite.txt`).
@@ -110,8 +124,8 @@ blocks (Costard et al. 2003; Dupeyrat et al. 2011).
   failure it retreats at 0.61 m/day against the quasi-steady h ΔT / (L_v + C_i ΔT₀) = 0.63 m/day
   (−2.4%).
 - **Failure.** The ice above the water becomes an overhang and drops into the niche once the
-  niche is 0.3 m deep (`Settings.collapse_ice`, at 12, 21, 33 and 46 h). Each fallen block has to
-  melt before the face is exposed again, so the crest retreats 0.68 m in 48 h.
+  niche is 0.3 m deep (`Settings.collapse_ice`, at 12, 21, 33 and 45 h). Each fallen block has to
+  melt before the face is exposed again, so the crest retreats 0.62 m in 48 h.
 - **Budget.** Energy closes to 1e-9.
 
 Setting `PHI_S_BLOCK = 0.35` gives an ice-rich silt block instead (thaw, then removal of the

@@ -20,9 +20,19 @@ def phase_class(model, p=None):
 
 
 class Recorder:
-    """Stores fields every `every` seconds (or at the given `times`) and scalars every call."""
+    """Stores fields every `every` seconds, or at the given `times`, and scalars every call.
+
+    Snapshots are taken when the recorder is called: each holds the first model state at or
+    after its requested time (the actual model time is stored). Requested times crossed by one
+    long step give a single snapshot."""
 
     def __init__(self, model, every=None, times=None):
+        if (every is None) == (times is None):
+            raise ValueError("Recorder: give exactly one of `every` or `times`")
+        if every is not None and not every > 0:
+            raise ValueError("Recorder: `every` must be positive")
+        if times is not None and np.any(np.diff(np.asarray(times, dtype=float)) < 0):
+            raise ValueError("Recorder: `times` must be non-decreasing")
         self.model = model
         self.every = every
         self.times = sorted(times) if times is not None else None

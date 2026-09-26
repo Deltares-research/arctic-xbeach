@@ -431,7 +431,37 @@ class Model2DV:
     # ------------------------------------------------------------ time step
     def step(self, dt, forcing_fn):
         """Advance by dt [s]: water level, implicit heat step (halved if needed), meltwater
-        mixing, salt transport, brine drainage, then erosion."""
+        mixing, salt transport, brine drainage, then erosion.
+
+        The step is atomic: if anything fails (e.g. the iteration does not converge even after
+        max_halvings), the state and all budgets are restored to the start of the step before
+        the exception propagates, so a caller can retry with a smaller dt."""
+        saved = self._snapshot()
+        try:
+            self._step(dt, forcing_fn)
+        except Exception:
+            self._restore(saved)
+            raise
+
+    def _snapshot(self):
+        return dict(arrays=[a.copy() for a in (self.phi_s, self.phi_h2o, self.salt, self.H)],
+                    energy=dict(self.energy), salt_exchange=dict(self.salt_exchange),
+                    eroded_sediment=self.eroded_sediment, n_collapse=len(self.collapse_events),
+                    last_step=self.last_step, time=self.time)
+
+    def _restore(self, saved):
+        for a, b in zip((self.phi_s, self.phi_h2o, self.salt, self.H), saved["arrays"]):
+            a[...] = b
+        self.energy.clear()
+        self.energy.update(saved["energy"])
+        self.salt_exchange.clear()
+        self.salt_exchange.update(saved["salt_exchange"])
+        self.eroded_sediment = saved["eroded_sediment"]
+        del self.collapse_events[saved["n_collapse"]:]
+        self.last_step = saved["last_step"]
+        self.time = saved["time"]
+
+    def _step(self, dt, forcing_fn):
         from .erosion import collapse_overhang, mix_meltwater, remove_thawed_face_cells
 
         F = forcing_fn(self.time + 0.5 * dt, self.grid.zc)
@@ -606,11 +636,17 @@ class Model2DV:
             j1 = j0
             while j1 + 1 < g.nz and p.fluid[j1 + 1, i]:
                 j1 += 1                                     # top of the water column under the ice
-            j_ice = np.nonzero(ice[:, i])[0].max()
-            if j_ice <= j1:
-                continue                                    # ice only below the water (anchor ice): skip
-            src_rows = np.arange(j1 + 1, j_ice + 1)
-            src_rows = src_rows[p.open[src_rows, i]]
+            if j1 + 1 >= g.nz or not ice[j1 + 1, i]:
+                continue                                    # no ice directly on this water column
+            # sources: the ice attached above the water column (and its brine pockets); water or
+            # air layered higher up is not connected to this column and does not drain into it
+            j2 = j1 + 1
+            while j2 + 1 < g.nz and ice[j2 + 1, i]:
+                j2 += 1
+            src_rows = np.arange(j1 + 1, j2 + 1)
+            src_rows = src_rows[ice[src_rows, i]]
+            if len(src_rows) == 0:
+                continue
             excess = keep * np.maximum(self.salt[src_rows, i] - s.S_ice_min * self.phi_h2o[src_rows, i], 0.0)
             total = float(np.sum(excess * V[src_rows, i]))
             if total <= 0.0:
