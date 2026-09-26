@@ -46,6 +46,17 @@ def plot_temperature(ax, ds, it, vlim=10.0, rasterized=True, contour=True):
     return m
 
 
+def plot_salinity(ax, ds, it, field="S_bulk", vmin=0.0, vmax=40.0, rasterized=True):
+    """Bulk (or brine, field="S_liq") salinity; cmocean haline if installed, else viridis."""
+    try:
+        import cmocean
+        cmap = cmocean.cm.haline
+    except ImportError:
+        cmap = "viridis"
+    return ax.pcolormesh(ds.x_edge, ds.z_edge, ds[field].isel(time=it), cmap=cmap, vmin=vmin, vmax=vmax,
+                         rasterized=rasterized)
+
+
 def save(fig, path, dpi=300):
     fig.savefig(path, dpi=dpi)
     plt.close(fig)

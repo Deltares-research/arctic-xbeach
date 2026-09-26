@@ -316,6 +316,51 @@ arctic_xbeach/
 - One Kd per event state.
 - Land SEB carried over from v1.0 for continuity of calibration.
 
+### 8.1 As implemented: salt (September 2026)
+
+Salt went in earlier than planned (Phase 5 above), because sea ice and saline subsea permafrost
+dominate the nearshore heat budget. The choices made in `thermal2dv`:
+
+- **Second conserved variable.** Each cell carries salt = θ_H₂O · S_bulk. Salt is excluded from
+  ice, so all of it sits in the liquid: S_liq = salt / θ_w.
+- **Linear liquidus, closed-form closure.** T_f = −m S with m = 0.054 K psu⁻¹ (Assur 1958, as in
+  CICE and Bitz & Lipscomb 1999) instead of the UNESCO polynomial of §3.1. Equilibrium below the
+  bulk liquidus gives θ_w = m·salt / (−T), and H(T) = (a + θ_H₂O c_i) T − L_v θ_H₂O − β(c_w − c_i)
+  − β ρL / T with β = m·salt. For given (H, salt) this is a quadratic in T, so T(H) is exact and
+  needs no inner iteration. The linear form is within 0.03 K of UNESCO for S = 0–40; it is the
+  usual choice for brine, where UNESCO is not valid anyway. Fresh H₂O keeps the sharp plateau.
+- **Transport.** Implicit diffusion, operator-split after the heat step: turbulent K in liquid
+  water, and D_m · tortuosity (5·10⁻¹⁰ m² s⁻¹) in pore water and brine. Water is relaxed towards
+  S_ref(z, t) in the same sponge and flushing as heat.
+- **Brine drainage (conceptual).** Sea-ice bulk salinity decays towards S_ice,min (5 psu) with
+  τ = 10 days. The rejected salt is spread over the connected water column under the ice (a sinking
+  brine plume). Dumping it into the first cell below instead traps hypersaline, fully liquid
+  pockets inside the growing ice.
+- **Erosion.** A thawed, ice-rich cell becomes sea water at S_sea and is mixed at once into the
+  adjacent water. Salt added or removed this way is logged, as are wet/dry changes and relaxation,
+  so the salt budget closes to round-off.
+
+Two numerical fixes came out of the verification:
+1. Water that freezes during a step is taken out of the turbulent class inside the Newton loop.
+   With the class lagged by one step, a column on the freezing plateau passed latent heat through
+   its eddy conductances and made frazil all the way down (+20% ice in the Neumann test).
+2. Eroded meltwater is stirred into the adjacent water straight away. Left at the melting point, it
+   made the next face non-melting for one step and cut the cold-face retreat by ~15%.
+
+Verification (all in `tests/test_thermal2dv.py`; figure in `examples/2dv/run_analytical_suite.py`):
+
+| Check | Result |
+|---|---|
+| Closure round trip, liquidus, dT/dH | exact to 1e-9 |
+| Salt diffusion vs erf, open water and pore water | < 1% of the step |
+| Relaxation vs the backward-Euler series | exact to 1e-9 |
+| Fresh ice growth vs one-phase Neumann | −1.5% at dz = 1 cm (first order in dz) |
+| Partly frozen saline sediment vs liquidus | exact to 1e-15 |
+| Brine rejection | salt budget 1e-10, energy budget 4e-11; water under the ice at its own freezing point |
+
+Sea ice grown from S = 30 water is 18% thinner than a fresh-ice Neumann solution with
+ΔT = T_f(S) − T_s. That is expected: brine keeps part of the ice liquid and lowers its conductivity.
+
 ---
 
 ## 9. Key risks

@@ -16,8 +16,9 @@ Arctic-XBeach couples the XBeach morphodynamic model with an enthalpy-based ther
 ## 2DV thermal model (branch `2DV-redesign`, experimental)
 This branch adds `arctic_xbeach/thermal2dv`, a first version of a cross-shore x vertical (2DV)
 thermal model in which every cell carries soil, water and ice fractions. Sea water, sea ice,
-pore ice and ice-rich bluffs share one implicit enthalpy equation, and a bluff melts where warm
-water touches it. It is standalone for now (not yet coupled to XBeach or `main.py`); the 1D
+pore ice and ice-rich bluffs share one implicit enthalpy equation, with salt as a second
+conserved variable (brine in sea ice, saline permafrost), and a bluff melts where warm water
+touches it. It is standalone for now (not yet coupled to XBeach or `main.py`); the 1D
 v1.0 model is unchanged. Design: `docs/2dv_design.md`. Demos and verification:
 `examples/2dv/README.md`. Tests: `pytest tests/test_thermal2dv.py`.
 

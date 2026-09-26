@@ -112,7 +112,9 @@ def main():
     series = {k: [] for k in ["t", "T_air", "eta", "T_ref_surf", "T_ref_bot", "active_layer", "iterations"]}
     series.update({f"T_tundra_{d}": [] for d in PROBE_DEPTHS})
     for d in PROBE_WATER_OFFSETS:
-        series.update({f"T_water_top_{d:.0f}": [], f"T_water_bot_{d:.0f}": [], f"ice_{d:.0f}": []})
+        series.update({f"T_water_top_{d:.0f}": [], f"T_water_bot_{d:.0f}": [], f"ice_{d:.0f}": [],
+                       f"S_water_top_{d:.0f}": [], f"S_water_bot_{d:.0f}": [], f"S_ice_{d:.0f}": []})
+    series["S_ref_surf"] = []
 
     def probe():
         p = model.state()
@@ -122,6 +124,7 @@ def main():
         series["eta"].append(F.eta)
         series["T_ref_surf"].append(F.T_ref[np.argmin(np.abs(g.zc + 0.5))])
         series["T_ref_bot"].append(F.T_ref[np.argmin(np.abs(g.zc + 5.0))])
+        series["S_ref_surf"].append(F.S_ref[np.argmin(np.abs(g.zc + 0.5))])
         col = p.soil[:, i_tundra]
         series["active_layer"].append(float(np.sum(g.dz * col * p.f_liq[:, i_tundra])))
         series["iterations"].append(model.last_step.get("iterations", 0))
@@ -131,7 +134,12 @@ def main():
             wet = np.nonzero(p.fluid[:, i])[0]
             series[f"T_water_top_{d:.0f}"].append(p.T[wet.max(), i] if len(wet) else np.nan)
             series[f"T_water_bot_{d:.0f}"].append(p.T[wet.min(), i] if len(wet) else np.nan)
-            series[f"ice_{d:.0f}"].append(float(np.sum(g.dz * (p.open[:, i] & ~p.fluid[:, i]) * (1 - p.f_liq[:, i]))))
+            ice = p.open[:, i] & ~p.fluid[:, i]
+            series[f"ice_{d:.0f}"].append(float(np.sum(g.dz * ice * (1 - p.f_liq[:, i]))))
+            series[f"S_water_top_{d:.0f}"].append(p.S_bulk[wet.max(), i] if len(wet) else np.nan)
+            series[f"S_water_bot_{d:.0f}"].append(p.S_bulk[wet.min(), i] if len(wet) else np.nan)
+            w = g.dz * ice * model.phi_h2o[:, i]
+            series[f"S_ice_{d:.0f}"].append(float(np.sum(w * p.S_bulk[:, i]) / w.sum()) if w.sum() > 0.02 else np.nan)
 
     rec = Recorder(model, times=[d * 86400.0 for d in SNAPSHOT_DOYS])
     rec(force=True)
@@ -161,6 +169,9 @@ def main():
     e_err = (rec.series["energy_domain"][-1] - rec.series["energy_domain"][0]) - budget
     print(f"{n} steps in {wall:.0f} s ({wall / n:.2f} s per step); mean iterations {np.mean(series['iterations'][1:]):.1f}")
     print(f"energy budget error {e_err:.2e} J/m ({e_err / max(abs(budget), 1.0):.1e} of the net exchange)")
+    s_budget = sum(rec.series[f"salt_{k}"][-1] - rec.series[f"salt_{k}"][0] for k in model.salt_exchange)
+    s_err = (rec.series["salt_domain"][-1] - rec.series["salt_domain"][0]) - s_budget
+    print(f"salt budget error {s_err:.2e} psu m3/m ({s_err / rec.series['salt_domain'][0]:.1e} of the salt content)")
     print(f"max active layer at tundra probe {max(series['active_layer']):.2f} m; eroded sediment "
           f"{model.eroded_sediment:.2f} m3/m; block failures {len(model.collapse_events)}")
     print(f"max nearshore ice thickness: " + ", ".join(
@@ -250,6 +261,29 @@ def plot(ds, series, x_shore, x_crest, g):
     ax.set_xlabel("day of year")
     ax.set_xlim(0, t[-1])
     pl.save(fig, OUT_DIR / "barter_timeseries.png")
+
+    # salinity: late winter (sea ice, brine-enriched water beneath it) and the August surge
+    pick = [0, 3]
+    fig, axes = plt.subplots(3, 1, figsize=(12, 10.5), constrained_layout=True,
+                             gridspec_kw=dict(height_ratios=[1, 1, 1.1]))
+    for ax, k in zip(axes[:2], pick):
+        m = pl.plot_salinity(ax, ds, its[k], vmin=0.0, vmax=40.0)
+        ax.set_xlim(x_shore - 400, x_crest + 60)
+        ax.set_ylim(-7, 14.5)
+        ax.set_ylabel("z (m)")
+        pl.panel_label(ax, f"({chr(97 + pick.index(k))}) {labels[k]}")
+    axes[1].set_xlabel("cross-shore distance (m)")
+    fig.colorbar(m, ax=axes[:2], label="bulk salinity (psu)", shrink=0.8, extend="max")
+    ax = axes[2]
+    ax.plot(t, series["S_ref_surf"], color="0.5", lw=1.2, label="ocean reference, -0.5 m")
+    for k, d in enumerate(PROBE_WATER_OFFSETS):
+        ax.plot(t, series[f"S_water_top_{d:.0f}"], color=f"C{k}", lw=1.2, label=f"water surface, {d:.0f} m offshore")
+        ax.plot(t, series[f"S_water_bot_{d:.0f}"], color=f"C{k}", lw=1.2, ls="--", label=f"water bottom, {d:.0f} m offshore")
+        ax.plot(t, series[f"S_ice_{d:.0f}"], color=f"C{k}", lw=2.2, ls=":", label=f"sea ice (bulk), {d:.0f} m offshore")
+    ax.set(xlabel="day of year", ylabel="salinity (psu)", xlim=(0, t[-1]))
+    ax.legend(frameon=False, ncol=2, loc="lower left", fontsize=9)
+    pl.panel_label(ax, "(c)")
+    pl.save(fig, OUT_DIR / "barter_salinity.png")
 
 
 if __name__ == "__main__":
