@@ -79,10 +79,10 @@ def build_model():
     model.phi_s[soil] = PHI_S_SEDIMENT
     model.phi_s[ice_rich] = PHI_S_ICE_RICH
     model.phi_h2o[soil] = 1.0 - model.phi_s[soil]
-    model.S[soil & ~land] = settings.S_sea                 # saline pore water offshore, fresh on land
+    model.set_salinity(settings.S_sea, soil & ~land)       # saline pore water offshore, fresh on land
     water = ~soil & (Z < 0.0)
     model.phi_h2o[water] = 1.0
-    model.S[water] = settings.S_sea
+    model.set_salinity(settings.S_sea, water)
 
     T0 = model.steady_state(T_air=T_LAND_MEAN, T_water=T_SEABED_MEAN)
     Tf_sea = float(mat.freezing_point(settings.S_sea))

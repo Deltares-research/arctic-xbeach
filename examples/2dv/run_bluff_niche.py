@@ -82,7 +82,7 @@ def main():
     model.phi_h2o[bluff] = 1.0 - model.phi_s[bluff]
     model.phi_s[beach] = PHI_S_BEACH
     model.phi_h2o[beach] = 1.0 - PHI_S_BEACH
-    model.S[beach] = settings.S_sea
+    model.set_salinity(settings.S_sea, beach)
     model.set_temperature(np.where(bluff, T_BLUFF, 0.0))
     model.update_wet_dry(ETA_STORM, np.full(grid.nz, T_WATER))
 

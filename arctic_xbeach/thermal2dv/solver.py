@@ -1,13 +1,24 @@
-"""Implicit enthalpy solver for the coupled water-soil-ice 2DV thermal model.
+"""Implicit enthalpy-salinity solver for the coupled water-soil-ice 2DV thermal model.
 
-Each cell holds volume fractions (mineral phi_s, total H2O phi_h2o, air) and volumetric
-enthalpy H. Sea water, sea ice, pore ice and ice wedges all share the one equation
+Each cell holds volume fractions (mineral phi_s, total H2O phi_h2o, air), volumetric
+enthalpy H and salt content. Sea water, sea ice, pore ice and ice wedges all share one
+heat equation
 
     V dH/dt = sum_faces G_f (T_nb - T) + Q_sw + Q_air + Q_geo + V gamma C (T_ref - T)
 
-discretised with backward Euler. The H-T relation is linearised per iteration (Newton on
-the piecewise-linear H-T closure, cf. Swaminathan & Voller 1993), so each time step
-converges to an energy-conserving solution without a Fourier-number limit.
+discretised with backward Euler. The H-T relation (materials.py: sharp for fresh H2O, a
+salt-exclusion mushy curve for saline H2O) is linearised per iteration (Newton, cf.
+Swaminathan & Voller 1993), so each step converges to an energy-conserving solution
+without a Fourier-number limit.
+
+Salt is a second conserved quantity carried by the liquid only. After each heat step it is
+diffused implicitly (turbulent diffusivity in water, molecular diffusivity x tortuosity in
+pore water and brine) and relaxed towards S_ref in the same sponge / flushing as heat:
+
+    V d(theta_w S)/dt = sum_faces G_s (S_nb - S) + V gamma (S_ref - S)
+
+Brine drains from sea ice into the water below it (conceptual gravity drainage), so a
+freezing sea rejects salt downward.
 
 Water cells use a turbulent eddy diffusivity instead of molecular conduction. A face
 between water and soil or ice carries an extra boundary-layer resistance 1/h, so thermal
@@ -48,17 +59,22 @@ class Settings:
     sw_beta: float = 0.55             # fraction of the shortwave absorbed in the top water cell (near infrared)
     kd: float = 0.7                   # attenuation of the penetrating shortwave [m-1] (Stefansson Sound, calm)
     sw_vertical_factor: float = 0.5   # shortwave on a vertical face relative to a horizontal one
-    # --- water column
-    S_sea: float = 30.0               # sea salinity (static) [-]
+    # --- water column and salt
+    S_sea: float = 30.0               # default sea salinity [psu], used when the forcing gives no S_ref
     Kx_surf: float = 1.0              # horizontal eddy diffusivity in shallow water [m2 s-1] (Clark et al. 2010)
     Kz_surf: float = 1e-2             # vertical eddy diffusivity in shallow water [m2 s-1]
     Kx_off: float = 0.3               # horizontal eddy diffusivity offshore [m2 s-1]
     Kz_off: float = 1e-3              # vertical eddy diffusivity offshore [m2 s-1]
     K_under_ice: float = 1e-4         # vertical eddy diffusivity under an ice cover [m2 s-1]
     d_surf: float = 2.0               # water depth below which the shallow-water values apply [m]
-    n_sponge: int = 5                 # number of offshore columns relaxed towards T_ref
+    n_sponge: int = 5                 # number of offshore columns relaxed towards T_ref / S_ref
     tau_sponge: float = 3 * 3600.0    # relaxation time in the sponge [s]
     tau_flush: float = 2 * 86400.0    # alongshore flushing time elsewhere in the water [s]; 0 switches it off
+    salt_transport: bool = True       # diffuse and relax salt; False keeps each cell's salt content fixed
+    tortuosity: float = 0.5           # tortuosity factor on molecular salt diffusion in pores and brine [-]
+    brine_drainage: bool = True       # drain brine from sea ice into the water below
+    tau_brine: float = 10 * 86400.0   # e-folding time of brine drainage [s]
+    S_ice_min: float = 5.0            # bulk salinity that drained sea ice tends to [psu] (first-year ice ~4-8)
     # --- cell classes and erosion
     open_threshold: float = 0.1       # cells with phi_s below this are open (water, ice or air)
     fluid_threshold: float = 0.999    # open cells with at least this liquid fraction mix turbulently; below it
@@ -77,8 +93,8 @@ def _face_terms(P, N, d_p, d_n, k_p, k_n, area, p, H, h):
     """Conductance of the faces between cells P and N (index tuples), and which of them are
     clamped melting faces (see module docstring).
 
-    Returns G (series conductance), the clamp mask, and for clamped faces the solid-side and
-    water-side cell tuples plus the solid's freezing point."""
+    Returns G (series conductance), the clamp mask, which side is solid, and the solid's
+    (bulk) freezing point."""
     r_p = 0.5 * d_p / k_p
     r_n = 0.5 * d_n / k_n
     fl_p, fl_n = p.fluid[P], p.fluid[N]
@@ -89,7 +105,7 @@ def _face_terms(P, N, d_p, d_n, k_p, k_n, area, p, H, h):
     T_s = np.where(solid_is_p, p.T[P], p.T[N])
     T_w = np.where(solid_is_p, p.T[N], p.T[P])
     Tf_s = np.where(solid_is_p, p.Tf[P], p.Tf[N])
-    below_liquidus = np.where(solid_is_p, H[P] <= p.lv[P], H[N] <= p.lv[N])
+    below_liquidus = np.where(solid_is_p, H[P] < p.H_liq[P], H[N] < p.H_liq[N])
     r_s = np.where(solid_is_p, r_p, r_n)
     T_face = T_s + (T_w - T_s) * r_s / (r_s + 1.0 / h)
     clamp = interface & below_liquidus & (T_w > Tf_s) & (T_face >= Tf_s)
@@ -104,80 +120,109 @@ class Model2DV:
         self.s = settings or Settings()
         self.phi_s = np.zeros(grid.shape)
         self.phi_h2o = np.zeros(grid.shape)
-        self.S = np.zeros(grid.shape)
+        self.salt = np.zeros(grid.shape)   # phi_h2o x bulk salinity [psu]
         self.H = np.zeros(grid.shape)
         self.time = 0.0
-        # cumulative energy exchanged with the outside world [J per m alongshore]
+        # cumulative exchange with the outside world [J, and psu m3, per m alongshore]
         self.energy = dict(boundary=0.0, wetdry=0.0, erosion=0.0, collapse=0.0)
+        self.salt_exchange = dict(relaxation=0.0, wetdry=0.0, erosion=0.0, collapse=0.0)
         self.eroded_sediment = 0.0  # [m3 per m alongshore]
         self.collapse_events = []
         self.last_step = {}
 
     # ------------------------------------------------------------------ state
     def state(self):
-        """Derived fields: freezing point, capacities, temperature, liquid fraction and cell classes."""
+        """Derived fields: freezing point, capacities, temperature, liquid content, salinity and cell classes."""
         s = self.s
-        Tf = mat.freezing_point(self.S)
-        cf, cu, lv = mat.heat_capacities(self.phi_s, self.phi_h2o)
+        c = mat.closure(self.phi_s, self.phi_h2o, self.salt)
         active = (self.phi_s + self.phi_h2o) > 1e-9
-        cf_safe = np.where(active, cf, 1.0)
-        cu_safe = np.where(active, cu, 1.0)
-        T, _ = mat.temperature_from_enthalpy(self.H, Tf, cf_safe, cu_safe, lv)
+        T, _, theta_w = mat.temperature_from_enthalpy(self.H, c)
         T = np.where(active, T, np.nan)
-        f_liq = mat.liquid_fraction(self.H, lv)
+        f_liq = mat.liquid_fraction(theta_w, self.phi_h2o)
+        with np.errstate(divide="ignore", invalid="ignore"):
+            S_liq = np.where(active & (theta_w > 1e-9), self.salt / theta_w, np.nan)
         soil = active & (self.phi_s >= s.open_threshold)
         open_ = active & ~soil
         fluid = open_ & (f_liq >= s.fluid_threshold)
-        return SimpleNamespace(Tf=Tf, cf=cf_safe, cu=cu_safe, lv=lv, T=T, f_liq=f_liq,
+        return SimpleNamespace(Tf=c.Tf, H_liq=c.H_liq, cf=c.c_frozen, cu=c.c_liquid, lv=c.lv, T=T,
+                               theta_w=theta_w, f_liq=f_liq, S_bulk=c.S_bulk, S_liq=S_liq,
                                active=active, soil=soil, open=open_, fluid=fluid)
 
+    @property
+    def S_bulk(self):
+        with np.errstate(divide="ignore", invalid="ignore"):
+            return np.where(self.phi_h2o > 0.0, self.salt / self.phi_h2o, 0.0)
+
+    def set_salinity(self, S, mask=None):
+        """Set the bulk salinity [psu] of the H2O in all cells, or in the cells of `mask`.
+        Call after the fractions are set and before set_temperature()."""
+        S = np.broadcast_to(np.asarray(S, dtype=float), self.grid.shape)
+        mask = np.ones(self.grid.shape, dtype=bool) if mask is None else mask
+        self.salt[mask] = (self.phi_h2o * S)[mask]
+
     def set_temperature(self, T, frozen_at_tf=True):
-        """Initialise the enthalpy from a temperature field (cells at exactly Tf start frozen)."""
-        Tf = mat.freezing_point(self.S)
-        cf, cu, lv = mat.heat_capacities(self.phi_s, self.phi_h2o)
-        H = mat.enthalpy_from_temperature(np.asarray(T, dtype=float) + np.zeros(self.grid.shape), Tf, cf, cu, lv, frozen_at_tf)
+        """Initialise the enthalpy from a temperature field (fresh cells at exactly 0 degC start frozen)."""
+        c = mat.closure(self.phi_s, self.phi_h2o, self.salt)
+        T = np.asarray(T, dtype=float) + np.zeros(self.grid.shape)
+        H = mat.enthalpy_from_temperature(T, c, frozen_at_tf)
         active = (self.phi_s + self.phi_h2o) > 1e-9
         self.H = np.where(active, H, 0.0)
 
     def total_energy(self):
         return float(np.sum(self.grid.volume * self.H))
 
+    def total_salt(self):
+        return float(np.sum(self.grid.volume * self.salt))
+
     # ------------------------------------------------------------- water level
-    def update_wet_dry(self, eta, T_ref):
+    def update_wet_dry(self, eta, T_ref, S_ref=None):
         """Flood open cells below the water level and drain liquid cells above it."""
         s, g = self.s, self.grid
         p = self.state()
         zc = g.zc[:, None]
         V = g.volume
+        S_ref = np.full(g.nz, s.S_sea) if S_ref is None else np.asarray(S_ref, dtype=float)
 
         drain = p.fluid & (zc >= eta)
         flood = ~p.active & (self.phi_s < s.open_threshold) & (zc < eta)
 
         e_removed = np.sum(V[drain] * self.H[drain])
+        salt_removed = np.sum(V[drain] * self.salt[drain])
         self.phi_h2o[drain] = 0.0
-        self.S[drain] = 0.0
+        self.salt[drain] = 0.0
         self.H[drain] = 0.0
 
         if np.any(flood):
             self.phi_h2o[flood] = 1.0 - self.phi_s[flood]
-            self.S[flood] = s.S_sea
-            Tf = mat.freezing_point(self.S)
-            cf, cu, lv = mat.heat_capacities(self.phi_s, self.phi_h2o)
-            T_new = np.maximum(np.broadcast_to(np.asarray(T_ref)[:, None], g.shape), Tf + 0.01)
-            H_new = lv + cu * (T_new - Tf)
-            self.H[flood] = H_new[flood]
-        e_added = np.sum(V[flood] * self.H[flood])
-        self.energy["wetdry"] += e_added - e_removed
+            self.salt[flood] = (self.phi_h2o * S_ref[:, None])[flood]
+            c = mat.closure(self.phi_s, self.phi_h2o, self.salt)
+            T_new = np.maximum(np.broadcast_to(np.asarray(T_ref, dtype=float)[:, None], g.shape), c.Tf + 0.01)
+            self.H[flood] = (c.c_liquid * T_new)[flood]
+        self.energy["wetdry"] += np.sum(V[flood] * self.H[flood]) - e_removed
+        self.salt_exchange["wetdry"] += np.sum(V[flood] * self.salt[flood]) - salt_removed
 
     # ------------------------------------------------------------ properties
-    def _conductivities(self, p):
+    def _turbulence(self, p):
+        """Eddy diffusivities per column: shallow (surf) or offshore values, damped under ice."""
         s, g = self.s, self.grid
         depth = (p.fluid * g.dz[:, None]).sum(axis=0)
         ice_covered = (p.open & ~p.fluid).any(axis=0)
         Kx = np.where(depth < s.d_surf, s.Kx_surf, s.Kx_off)
         Kz = np.where(depth < s.d_surf, s.Kz_surf, s.Kz_off)
         Kz = np.where(ice_covered, s.K_under_ice, Kz)
+        return Kx, Kz
 
+    def _relaxation_rate(self):
+        """Relaxation rate [s-1] per column: sponge at the offshore boundary, flushing elsewhere."""
+        s = self.s
+        gamma = np.zeros(self.grid.nx)
+        if s.tau_flush > 0:
+            gamma[:] = 1.0 / s.tau_flush
+        gamma[: s.n_sponge] = 1.0 / s.tau_sponge
+        return gamma
+
+    def _conductivities(self, p):
+        Kx, Kz = self._turbulence(p)
         k_soil = mat.soil_conductivity(self.phi_s, self.phi_h2o, p.f_liq)
         k_open = p.f_liq * mat.K_WATER + (1.0 - p.f_liq) * mat.K_ICE
         # only liquid water mixes turbulently; ice and slush conduct molecularly
@@ -234,8 +279,8 @@ class Model2DV:
         exposure = SimpleNamespace(
             A_top=top * g.dx[None, :], r_top=0.5 * g.dz[:, None] / kz,     # area and half-cell resistance
             A_side=side * g.dz[:, None], r_side=0.5 * g.dx[None, :] / kx,
+            a_face=a_face,                                                 # constant part of clamped-face fluxes
         )
-        exposure.a_face = a_face  # constant part of the clamped melting-face fluxes
         return idx, L, exposure
 
     def _shortwave(self, p, F):
@@ -294,12 +339,17 @@ class Model2DV:
 
     # ------------------------------------------------------------ time step
     def step(self, dt, forcing_fn):
-        """Advance by dt [s]: water level, implicit heat step (halved if needed), then erosion."""
+        """Advance by dt [s]: water level, implicit heat step (halved if needed), salt
+        transport, brine drainage, then erosion."""
         from .erosion import collapse_overhang, remove_thawed_face_cells
 
         F = forcing_fn(self.time + 0.5 * dt, self.grid.zc)
-        self.update_wet_dry(F.eta, F.T_ref)
+        self.update_wet_dry(F.eta, F.T_ref, F.S_ref)
         self._advance(dt, forcing_fn, self.time, 0)
+        if self.s.salt_transport:
+            self._solve_salt(dt, F)
+        if self.s.brine_drainage:
+            self._drain_brine(dt)
         self.time += dt
         if self.s.erosion:
             remove_thawed_face_cells(self)
@@ -316,14 +366,39 @@ class Model2DV:
         self._advance(0.5 * dt, forcing_fn, t0 + 0.5 * dt, depth + 1)
 
     def _solve(self, dt, F):
-        """One backward-Euler step. Returns False (state untouched) if the iteration fails."""
+        """One backward-Euler heat step. Returns False (state untouched) if the iteration fails.
+
+        The cell classes are taken from the start of the step, except that water which freezes
+        during the step must not keep mixing turbulently: otherwise a column on the freezing
+        plateau passes latent heat through its eddy conductances and makes frazil all the way
+        down. As soon as a Newton iterate freezes a fluid cell, the pass restarts with that
+        cell non-fluid. Classes only ever lose fluid cells, so this cannot oscillate; it
+        typically costs one extra pass when a water surface starts to freeze."""
+        not_fluid = np.zeros(self.grid.shape, dtype=bool)
+        while True:
+            Hk, froze, info = self._solve_pass(dt, F, not_fluid)
+            if Hk is not None:
+                break
+            if froze is None or not np.any(froze & ~not_fluid):
+                return False
+            not_fluid |= froze
+        act = info["active"]
+        self.energy["boundary"] += info["energy_in"]
+        self.H[act] = Hk
+        self.last_step = dict(iterations=info["iterations"], dt=dt, energy_in=info["energy_in"],
+                              energy_change=info["energy_change"],
+                              energy_residual=info["energy_change"] - info["energy_in"])
+        return True
+
+    def _solve_pass(self, dt, F, not_fluid):
         s, g = self.s, self.grid
         p = self.state()
+        p.fluid = p.fluid & ~not_fluid
         idx, L, ex = self._assemble(p)
         act = p.active
         V = g.volume[act]
         H0 = self.H[act]
-        Tf, cf, cu, lv = p.Tf[act], p.cf[act], p.cu[act], p.lv[act]
+        c = mat.closure(self.phi_s[act], self.phi_h2o[act], self.salt[act])
 
         # fixed sources and linear exchanges: flux into a cell = a - g * T
         q_vol, sw_top, sw_side = self._shortwave(p, F)
@@ -332,22 +407,18 @@ class Model2DV:
         q_geo[0, :] = s.q_geo * g.dx
         a_const += q_geo[act]
 
-        gamma = np.zeros(g.nx)
-        if s.tau_flush > 0:
-            gamma[:] = 1.0 / s.tau_flush
-        gamma[: s.n_sponge] = 1.0 / s.tau_sponge
-        g_const = (p.fluid * g.volume * p.cu * gamma[None, :])[act]
-        T_ref = np.broadcast_to(np.asarray(F.T_ref)[:, None], g.shape)[act]
+        g_const = (p.fluid * g.volume * p.cu * self._relaxation_rate()[None, :])[act]
+        T_ref = np.broadcast_to(np.asarray(F.T_ref, dtype=float)[:, None], g.shape)[act]
         a_const += g_const * T_ref
 
-        T, D = mat.temperature_from_enthalpy(H0, Tf, cf, cu, lv)
+        T, D, _ = mat.temperature_from_enthalpy(H0, c)
         faces = [[ex.A_top[act], ex.r_top[act], sw_top[act], T.copy()],
                  [ex.A_side[act], ex.r_side[act], sw_side[act], T.copy()]]
 
         Hk = H0.copy()
         converged = False
         for it in range(s.max_iter):
-            T, D = mat.temperature_from_enthalpy(Hk, Tf, cf, cu, lv)
+            T, D, _ = mat.temperature_from_enthalpy(Hk, c)
             g_air, a_air, Ts = self._surface_exchange(T, faces, F)
             for face, ts in zip(faces, Ts):
                 face[3] = ts
@@ -355,6 +426,12 @@ class Model2DV:
             A = sp.diags(V / dt) + M @ sp.diags(D)
             rhs = V / dt * H0 + a_const + a_air - M @ (T - D * Hk)
             H_new = splu(A.tocsc()).solve(rhs)
+            _, _, th = mat.temperature_from_enthalpy(H_new, c)
+            fz = p.fluid[act] & (mat.liquid_fraction(th, c.phi_h2o) < s.fluid_threshold)
+            if np.any(fz):  # restart the pass with these cells non-fluid
+                froze = np.zeros(g.shape, dtype=bool)
+                froze[act] = fz
+                return None, froze, None
             if it >= 10:  # under-relax cells that keep hopping across a plateau edge
                 H_new = Hk + 0.5 * (H_new - Hk)
             dH = np.max(np.abs(H_new - Hk)) if len(Hk) else 0.0
@@ -363,17 +440,88 @@ class Model2DV:
                 converged = True
                 break
         if not converged:
-            return False
+            return None, None, None
 
-        T, _ = mat.temperature_from_enthalpy(Hk, Tf, cf, cu, lv)
+        T, _, _ = mat.temperature_from_enthalpy(Hk, c)
         g_air, a_air, _ = self._surface_exchange(T, faces, F)
         e_in = dt * float(np.sum(a_const + a_air - (g_const + g_air) * T))
         e_change = float(np.sum(V * (Hk - H0)))
-        self.energy["boundary"] += e_in
-        self.H[act] = Hk
-        self.last_step = dict(iterations=it + 1, dt=dt, energy_in=e_in, energy_change=e_change,
-                              energy_residual=e_change - e_in)
-        return True
+        return Hk, None, dict(active=act, iterations=it + 1, energy_in=e_in, energy_change=e_change)
+
+    def _solve_salt(self, dt, F):
+        """Implicit diffusion and relaxation of salt in all cells that hold liquid."""
+        s, g = self.s, self.grid
+        p = self.state()
+        liq = p.active & (p.theta_w > 1e-6)
+        n = int(liq.sum())
+        if n == 0:
+            return
+        idx = -np.ones(g.shape, dtype=int)
+        idx[liq] = np.arange(n)
+        Kx, Kz = self._turbulence(p)
+        D_pore = mat.D_SALT * s.tortuosity * p.theta_w          # molecular, in pore water and brine
+        Dx = np.where(p.fluid, Kx[None, :] + mat.D_SALT, D_pore)
+        Dz = np.where(p.fluid, Kz[None, :] + mat.D_SALT, D_pore)
+
+        rows, cols, vals = [], [], []
+        for P, N, d_p, d_n, Dc, area in (
+            *[((jj, ii), (jj, ii + 1), g.dx[ii], g.dx[ii + 1], Dx, g.dz[jj])
+              for jj, ii in [np.nonzero(liq[:, :-1] & liq[:, 1:])]],
+            *[((jj, ii), (jj + 1, ii), g.dz[jj], g.dz[jj + 1], Dz, g.dx[ii])
+              for jj, ii in [np.nonzero(liq[:-1, :] & liq[1:, :])]],
+        ):
+            G = area / (0.5 * d_p / Dc[P] + 0.5 * d_n / Dc[N])
+            a, b = idx[P], idx[N]
+            rows += [a, b, a, b]
+            cols += [a, b, b, a]
+            vals += [G, G, -G, -G]
+        L = sp.coo_matrix((np.concatenate(vals), (np.concatenate(rows), np.concatenate(cols))), shape=(n, n)).tocsc()
+
+        V = g.volume[liq]
+        theta = p.theta_w[liq]
+        S_ref = np.full(g.nz, s.S_sea) if F.S_ref is None else np.asarray(F.S_ref, dtype=float)
+        S_ref_c = np.broadcast_to(S_ref[:, None], g.shape)[liq]
+        g_rel = (p.fluid * g.volume * self._relaxation_rate()[None, :])[liq]
+        A = sp.diags(V * theta / dt + g_rel) + L
+        rhs = V * self.salt[liq] / dt + g_rel * S_ref_c
+        S_new = splu(A.tocsc()).solve(rhs)
+        self.salt[liq] = theta * S_new
+        self.salt_exchange["relaxation"] += dt * float(np.sum(g_rel * (S_ref_c - S_new)))
+
+    def _drain_brine(self, dt):
+        """Conceptual gravity drainage: brine leaves the sea ice (and any brine pockets in it)
+        so that the ice bulk salinity decays towards S_ice_min with tau_brine. The dense brine
+        sinks and mixes, so it is spread by volume over the connected water column under the
+        ice; dumping it into the first cell below would keep that cell liquid while the
+        fresher water beneath it froze, trapping hypersaline pockets in the ice."""
+        s, g = self.s, self.grid
+        p = self.state()
+        ice = p.open & ~p.fluid
+        if not np.any(ice):
+            return
+        V = g.volume
+        keep = 1.0 - np.exp(-dt / s.tau_brine)
+        for i in np.nonzero(ice.any(axis=0))[0]:
+            fl = np.nonzero(p.fluid[:, i])[0]
+            if len(fl) == 0:
+                continue  # grounded (bottom-fast) ice: nowhere to drain
+            j0 = fl.min()
+            j1 = j0
+            while j1 + 1 < g.nz and p.fluid[j1 + 1, i]:
+                j1 += 1                                     # top of the water column under the ice
+            j_ice = np.nonzero(ice[:, i])[0].max()
+            if j_ice <= j1:
+                continue                                    # ice only below the water (anchor ice): skip
+            src_rows = np.arange(j1 + 1, j_ice + 1)
+            src_rows = src_rows[p.open[src_rows, i]]
+            excess = keep * np.maximum(self.salt[src_rows, i] - s.S_ice_min * self.phi_h2o[src_rows, i], 0.0)
+            total = float(np.sum(excess * V[src_rows, i]))
+            if total <= 0.0:
+                continue
+            self.salt[src_rows, i] -= excess
+            run = np.arange(j0, j1 + 1)
+            w = V[run, i] * self.phi_h2o[run, i]
+            self.salt[run, i] += total * self.phi_h2o[run, i] / np.sum(w)  # same salinity rise in every cell
 
     # -------------------------------------------------------------- helpers
     def steady_state(self, T_air, T_water, frozen=True):

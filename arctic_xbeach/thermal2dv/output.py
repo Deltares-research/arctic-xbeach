@@ -27,9 +27,10 @@ class Recorder:
         self.every = every
         self.times = sorted(times) if times is not None else None
         self.next_time = 0.0 if times is None else (self.times[0] if self.times else np.inf)
-        self.snap = dict(time=[], T=[], f_liq=[], phi_s=[], phi_h2o=[], cls=[])
+        self.snap = dict(time=[], T=[], f_liq=[], phi_s=[], phi_h2o=[], S_bulk=[], S_liq=[], cls=[])
         self.series = dict(time=[], energy_domain=[], energy_boundary=[], energy_wetdry=[], energy_erosion=[],
-                           energy_collapse=[], eroded_sediment=[], ice_volume=[], iterations=[])
+                           energy_collapse=[], salt_domain=[], salt_relaxation=[], salt_wetdry=[], salt_erosion=[],
+                           salt_collapse=[], eroded_sediment=[], ice_volume=[], iterations=[])
 
     def __call__(self, force=False):
         m = self.model
@@ -39,6 +40,9 @@ class Recorder:
         self.series["energy_domain"].append(m.total_energy())
         for key in ("boundary", "wetdry", "erosion", "collapse"):
             self.series[f"energy_{key}"].append(m.energy[key])
+        self.series["salt_domain"].append(m.total_salt())
+        for key in ("relaxation", "wetdry", "erosion", "collapse"):
+            self.series[f"salt_{key}"].append(m.salt_exchange[key])
         self.series["eroded_sediment"].append(m.eroded_sediment)
         self.series["ice_volume"].append(float(np.sum(V * m.phi_h2o * (1.0 - p.f_liq) * p.active)))
         self.series["iterations"].append(m.last_step.get("iterations", 0))
@@ -50,6 +54,8 @@ class Recorder:
             self.snap["f_liq"].append(np.where(p.active, p.f_liq, np.nan))
             self.snap["phi_s"].append(m.phi_s.copy())
             self.snap["phi_h2o"].append(m.phi_h2o.copy())
+            self.snap["S_bulk"].append(np.where(p.active, p.S_bulk, np.nan))
+            self.snap["S_liq"].append(p.S_liq.copy())
             self.snap["cls"].append(phase_class(m, p))
             if self.times is None:
                 self.next_time = m.time + self.every
@@ -71,6 +77,8 @@ class Recorder:
                 "f_liq": (("time", "z", "x"), np.array(self.snap["f_liq"]), {"long_name": "liquid fraction of H2O"}),
                 "phi_s": (("time", "z", "x"), np.array(self.snap["phi_s"]), {"long_name": "mineral volume fraction"}),
                 "phi_h2o": (("time", "z", "x"), np.array(self.snap["phi_h2o"]), {"long_name": "total H2O volume fraction"}),
+                "S_bulk": (("time", "z", "x"), np.array(self.snap["S_bulk"]), {"units": "psu", "long_name": "bulk salinity of the H2O"}),
+                "S_liq": (("time", "z", "x"), np.array(self.snap["S_liq"]), {"units": "psu", "long_name": "salinity of the liquid (brine)"}),
                 "phase": (("time", "z", "x"), np.array(self.snap["cls"]),
                           {"flag_values": list(range(6)), "flag_meanings": " ".join(n.replace(" ", "_") for n in CLASS_NAMES)}),
             },
@@ -81,6 +89,7 @@ class Recorder:
                 ds[key] = (("time_series",), np.array(val))
         ds = ds.assign_coords(time_series=t_ser)
         ds["energy_domain"].attrs["units"] = "J m-1"
+        ds["salt_domain"].attrs["units"] = "psu m3 m-1"
         ds["eroded_sediment"].attrs["units"] = "m3 m-1"
         ds["ice_volume"].attrs["units"] = "m3 m-1"
         return ds

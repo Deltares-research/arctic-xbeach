@@ -4,6 +4,8 @@ A forcing function is any callable f(t, zc) -> Forcing, with t in seconds since 
 of the run and zc the cell-centre elevations (used to build the ocean reference profile).
 """
 
+from __future__ import annotations
+
 from dataclasses import dataclass
 
 import numpy as np
@@ -20,16 +22,19 @@ class Forcing:
     eta: float             # still water level [m]
     T_ref: np.ndarray      # ocean reference temperature per grid row [degC] (sponge + flushing target)
     albedo_land: float = 0.18
+    S_ref: np.ndarray | None = None  # ocean reference salinity per grid row [psu]; None uses Settings.S_sea
 
 
-def constant_forcing(T_air=0.0, sw_down=0.0, lw_down=None, u10=0.0, eta=0.0, T_water=0.0, albedo_land=0.18):
+def constant_forcing(T_air=0.0, sw_down=0.0, lw_down=None, u10=0.0, eta=0.0, T_water=0.0, albedo_land=0.18,
+                     S_water=None):
     """Forcing that does not change in time. lw_down=None gives a longwave that balances a
     black body at T_air, i.e. no net radiative exchange for a surface at air temperature."""
     if lw_down is None:
         lw_down = 5.670374419e-8 * (T_air + 273.15) ** 4
 
     def f(t, zc):
-        return Forcing(T_air, sw_down, lw_down, u10, eta, np.full(len(zc), T_water, dtype=float), albedo_land)
+        S_ref = None if S_water is None else np.full(len(zc), S_water, dtype=float)
+        return Forcing(T_air, sw_down, lw_down, u10, eta, np.full(len(zc), T_water, dtype=float), albedo_land, S_ref)
 
     return f
 
@@ -45,7 +50,8 @@ def synthetic_arctic_forcing(
     surge_doy=228.0,        # day of year of the surge peak (mid-August)
     surge_width=1.5,        # e-folding half-width of the surge [days]
     storm_u10=15.0,         # wind speed during the storm [m s-1]
-    S_sea=30.0,             # sea salinity, sets the winter water temperature (freezing point)
+    S_sea=30.0,             # sea salinity at depth [psu]; sets the winter water temperature (freezing point)
+    S_fresh_drop=6.0,       # summer freshening of the surface layer (river and melt water) [psu]
     T_surf_peak=7.5,        # peak summer surface-water temperature above freezing [K]
     T_bottom_peak=2.5,      # peak summer bottom-water temperature above freezing [K]
     z_thermocline=-3.0,     # centre of the warm-surface / cold-bottom transition [m]
@@ -83,7 +89,9 @@ def synthetic_arctic_forcing(
         T_bot = Tf_sea + 0.05 + max(0.0, T_bottom_peak * np.sin(np.pi * (day - 190.0) / 110.0)) * (190.0 <= day <= 300.0)
         w = 0.5 * (1.0 + np.tanh((np.asarray(zc) - z_thermocline) / 0.75))
         T_ref = T_bot + w * (T_surf - T_bot)
+        fresh = max(0.0, np.sin(np.pi * (day - 170.0) / 120.0)) * (170.0 <= day <= 290.0)
+        S_ref = S_sea - S_fresh_drop * fresh * w  # warm, fresher surface layer over cold, saline bottom water
 
-        return Forcing(T_air, sw, lw, wind, eta, T_ref, albedo_land)
+        return Forcing(T_air, sw, lw, wind, eta, T_ref, albedo_land, S_ref)
 
     return f
