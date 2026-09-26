@@ -13,6 +13,14 @@ Arctic-XBeach couples the XBeach morphodynamic model with an enthalpy-based ther
 ## Status
 🚧 **In Development** - This model is currently under active development. A manuscript describing the model formulation and validation is in preparation for submission to Geoscientific Model Development (GMD).
 
+## 2DV thermal model (branch `2DV-redesign`, experimental)
+This branch adds `arctic_xbeach/thermal2dv`, a first version of a cross-shore x vertical (2DV)
+thermal model in which every cell carries soil, water and ice fractions. Sea water, sea ice,
+pore ice and ice-rich bluffs share one implicit enthalpy equation, and a bluff melts where warm
+water touches it. It is standalone for now (not yet coupled to XBeach or `main.py`); the 1D
+v1.0 model is unchanged. Design: `docs/2dv_design.md`. Demos and verification:
+`examples/2dv/README.md`. Tests: `pytest tests/test_thermal2dv.py`.
+
 ## Case Study
 The model has been developed and tested for Barter Island, Alaska, leveraging well-documented permafrost characteristics and observational datasets for validation.
 
@@ -137,13 +145,16 @@ arctic-xbeach/
 ├── arctic_xbeach/          # Main package
 │   ├── model.py            # Simulation class
 │   ├── bathymetry.py       # Grid generation
-│   └── miscellaneous.py    # Utility functions
+│   ├── miscellaneous.py    # Utility functions
+│   └── thermal2dv/         # 2DV water-soil-ice thermal model (experimental)
 ├── examples/
 │   ├── analytical/         # Validation test cases
+│   ├── 2dv/                # 2DV demos: ice block, bluff niche, Barter transect
 │   └── case_studies/
 │       └── barter_island/  # Primary case study
 │           ├── config.yaml
 │           └── database/   # Forcing data (downloaded)
+├── tests/                  # pytest verification of the 2DV model
 ├── main.py                 # CLI entry point
 ├── download_data.py        # Data download script
 ├── requirements.txt
