@@ -107,7 +107,9 @@ class Thermal2DVDriver:
         self.forcing = self._build_forcing()
         self.recorder = Recorder(m, every=cfg["output_interval"] * 3600.0)
         self.recorder(force=True)
+        self.handoff = []
         self.find_thaw_depth()
+        self._keep_handoff()
         logger.info(f"2DV thermal model: {grid.nx} x {grid.nz} cells, x {x0:.0f}-{x1:.0f} m, "
                     f"fine window {x_crest + fw[0]:.0f}-{x_crest + fw[1]:.0f} m, crest at {x_crest:.0f} m; "
                     f"radiation geometry {'on' if site else 'off'}")
@@ -163,7 +165,15 @@ class Thermal2DVDriver:
     def step(self, timestep_id):
         self.coupler.step(self.sim.dt * 3600.0, self.forcing)
         self.coupler.end_storm()
+        n_snap = len(self.recorder.snap["time"])
         self.recorder()
+        if len(self.recorder.snap["time"]) > n_snap:
+            self._keep_handoff()
+
+    def _keep_handoff(self):
+        """Bed level and erodible thickness on the XBeach grid, at every 2DV snapshot."""
+        zb, ne = self.coupler.to_xbeach(self.sim.xgr, self.sim.zgr)
+        self.handoff.append((self.model.time, zb, ne))
 
     def find_thaw_depth(self):
         """Hand the 2DV bed and erodible thickness to the XBeach grid (sim.zgr, sim.thaw_depth)."""
@@ -186,6 +196,10 @@ class Thermal2DVDriver:
             last = ds.isel(globaltime=-1)
             sedero = last["sedero"].values.ravel()
             zb_end = last["zb"].values.ravel()
+            stats = None
+            if "zs_mean" in ds:  # time-mean output (nmeanvar zs, H; written for thermal.model 2dv)
+                stats = [ds[v].values.ravel() for v in ("zs_mean", "zs_var", "zs_max", "H_mean")]
+                stats[1] = np.sqrt(np.maximum(stats[1], 0.0))
             zs = ds["zs"].values.reshape(ds.sizes["globaltime"], -1) if "zs" in ds else None
             H = ds["H"].values.reshape(ds.sizes["globaltime"], -1).mean(axis=0) if "H" in ds else None
         F = self.forcing(m.time + 0.5 * sim.dt * 3600.0, m.grid.zc)
@@ -193,9 +207,12 @@ class Thermal2DVDriver:
         self.coupler.apply_bed_change(x, sedero, F.T_ref, S, F.eta)
         # outside the 2DV domain XBeach's own bed evolves
         sim.zgr = np.interp(sim.xgr, x, zb_end)
-        if sim.xbeach_storms[timestep_id] and zs is not None and H is not None:
+        if sim.xbeach_storms[timestep_id] and (stats is not None or (zs is not None and H is not None)):
             T_p = float(sim.conditions[timestep_id]["Tp(s)"])
-            st = self.coupler.set_storm(x, zb_end, zs, H, T_p)
+            if stats is not None:
+                st = self.coupler.set_storm_stats(x, zb_end, *stats[:3], stats[3], T_p)
+            else:  # only snapshots: a crude wetted fraction
+                st = self.coupler.set_storm(x, zb_end, zs, H, T_p)
             logger.debug(f"2DV storm: swash level {st['eta']:.2f} m, max h {np.max(st['h']):.0f} W m-2 K-1")
 
     def write_output(self, timestep_id, t_start=None):
@@ -204,6 +221,13 @@ class Thermal2DVDriver:
     def finalize(self):
         ds = self.recorder.to_dataset(t0=str(self.t0))
         ds["zb_2dv"] = (("x",), self.coupler.bed_level())
+        t = np.array([h[0] for h in self.handoff])
+        ds = ds.assign_coords(x_xb=np.asarray(self.sim.xgr, dtype=float),
+                              time_xb=self.t0 + (t * 1e3).astype("timedelta64[ms]"))
+        ds["zb_xb"] = (("time_xb", "x_xb"), np.array([h[1] for h in self.handoff]),
+                       {"long_name": "bed level handed to XBeach", "units": "m"})
+        ds["ne_xb"] = (("time_xb", "x_xb"), np.array([h[2] for h in self.handoff]),
+                       {"long_name": "erodible thickness handed to XBeach (ne_layer)", "units": "m"})
         ds.attrs.update({f"sediment_{k}": v for k, v in self.coupler.sediment.items()})
         out = Path(self.sim.result_dir) / "thermal2dv.nc"
         ds.to_netcdf(out)

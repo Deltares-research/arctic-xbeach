@@ -39,7 +39,8 @@ def run():
     def timed(*args, **kwargs):
         t0 = time.perf_counter()
         ok = original(*args, **kwargs)
-        calls.append((kwargs.get("timestep_id"), ok, time.perf_counter() - t0))
+        tid = kwargs.get("timestep_id")
+        calls.append((tid, ok, time.perf_counter() - t0, str(sim.timestamps[tid]), bool(sim.xbeach_storms[tid])))
         return ok
 
     sim.start_xbeach = timed
@@ -48,8 +49,8 @@ def run():
     wall = time.perf_counter() - t0
     lines = [f"main(): {wall:.0f} s wall; {len(calls)} XBeach calls, "
              f"{sum(c[1] for c in calls)} successful, {sum(c[2] for c in calls):.0f} s in XBeach"]
-    for tid, ok, w in calls:
-        lines.append(f"  step {tid:5d} ({sim.timestamps[tid]}): success={ok}, {w:5.1f} s, storm={bool(sim.xbeach_storms[tid])}")
+    for tid, ok, w, stamp, storm in calls:
+        lines.append(f"  step {tid:5d} ({stamp}): success={ok}, {w:5.1f} s, storm={storm}")
     return Path(sim.result_dir), lines
 
 

@@ -772,9 +772,11 @@ class Simulation():
             # Output variables
             "outputformat": "netcdf",
             "tintg": tintg,
-            "tstart": 0
+            "tstart": 0,
+            # 2DV thermal model: one time-mean over the run (swash statistics; nmeanvar in params.txt)
+            **({"tintm": tintg} if str(self.config.thermal.get("model", "1d")).lower() == "2dv" else {}),
         }
-    
+
     def _configure_xbeach_files(self, timestep_id, destination_folder, wl):
         """
         Configure XBeach parameter file with hotstart and boundary conditions.
@@ -850,6 +852,9 @@ class Simulation():
                 globalvars = ["x", "y", "zb", "zs", "H", "sedero", 
                              "E", "Sxx", "Sxy", "Syy", "thetamean", "vmag", "urms"]
                 new_input_text.append("\n")
+                if str(self.config.thermal.get("model", "1d")).lower() == "2dv":
+                    # swash statistics for the 2DV thermal model (wetted fraction, depth, wave height)
+                    new_input_text += ["nmeanvar = 2\n", "zs\n", "H\n", "\n"]
                 new_input_text.append(f"nglobalvar = {len(globalvars)}\n")
                 for var in globalvars:
                     new_input_text.append(f"{var}\n")

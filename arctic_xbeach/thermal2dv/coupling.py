@@ -262,28 +262,47 @@ class Thermal2DVCoupler:
 
     # -------------------------------------------------------------- hydrodynamics
     def set_storm(self, x_xb, zb_xb, zs, H, T_wave):
-        """Hydrodynamics of an XBeach run for the 2DV steps it covers.
+        """Hydrodynamics of an XBeach run from a water-level time series.
 
-        zs: water level time series on XBeach's nodes, shape (nt, nx); H: wave height on the
-        nodes (e.g. the run's mean H); T_wave: wave period [s].
-        The 2DV grid is flooded up to the highest bed that is wet at least f_wet_min of the
-        time, and h in each column is the wetted fraction times the (clipped, calibrated)
-        Kobayashi value."""
-        g = self.m.grid
+        zs: water level on XBeach's nodes, shape (nt, nx); H: wave height on the nodes (e.g.
+        the run's mean H); T_wave: wave period [s]. See _storm for what is set."""
         zs = np.atleast_2d(np.asarray(zs, dtype=float))
         depth = zs - np.asarray(zb_xb, dtype=float)[None, :]
-        wet = depth > self.wet_depth
-        f_wet = wet.mean(axis=0)
+        wet = np.isfinite(depth) & (depth > self.wet_depth)
         n_wet = wet.sum(axis=0)
         d_mean = np.where(n_wet > 0, np.where(wet, depth, 0.0).sum(axis=0) / np.maximum(n_wet, 1), 0.0)
+        return self._storm(x_xb, zb_xb, wet.mean(axis=0), d_mean, H, T_wave, float(np.nanmean(zs[:, 0])))
+
+    def set_storm_stats(self, x_xb, zb_xb, zs_mean, zs_std, zs_max, H, T_wave):
+        """Hydrodynamics of an XBeach run from its time-mean statistics (nmeanvar zs, H).
+
+        The wetted fraction is the Gaussian exceedance P(zs > zb + wet_depth) with the run's
+        mean and standard deviation of zs, and 0 where zs never rose above that level."""
+        from scipy.special import ndtr
+
+        zb = np.asarray(zb_xb, dtype=float)
+        zs_mean, zs_std, zs_max = (np.asarray(v, dtype=float) for v in (zs_mean, zs_std, zs_max))
+        level = zb + self.wet_depth
+        with np.errstate(divide="ignore", invalid="ignore"):
+            f_wet = np.where(zs_std > 1e-6, ndtr((zs_mean - level) / zs_std), (zs_mean > level).astype(float))
+        f_wet = np.where(np.isfinite(zs_max) & (zs_max > level), np.nan_to_num(f_wet), 0.0)
+        d_mean = np.maximum(np.nan_to_num(zs_mean - zb), 0.0)
+        return self._storm(x_xb, zb_xb, f_wet, d_mean, H, T_wave, float(np.nanmean(zs_mean[:1])))
+
+    def _storm(self, x_xb, zb_xb, f_wet, d_mean, H, T_wave, zs_offshore):
+        """The 2DV grid is flooded up to the highest bed that is wet at least f_wet_min of the
+        time, and h in each column is the wetted fraction times the (clipped, calibrated)
+        Kobayashi value; h_floor where XBeach never wets it."""
+        g = self.m.grid
+        H = np.nan_to_num(np.asarray(H, dtype=float), nan=0.0)  # XBeach writes NaN/fill on dry nodes
         h = np.clip(self.h_factor * kobayashi_h(H, T_wave, np.maximum(d_mean, self.wet_depth)), *self.h_bounds)
-        h_eff = np.maximum(f_wet * h, self.h_floor)  # never wet in XBeach: practically no exchange
+        h_eff = np.maximum(np.where(np.isfinite(h), f_wet * h, 0.0), self.h_floor)
         e_xb = node_edges(x_xb)
         h_col, cov = remap(e_xb, h_eff, g.xe)
         f_col, _ = remap(e_xb, f_wet, g.xe)
         swash = f_wet >= self.f_wet_min
-        eta = float(np.max(np.asarray(zb_xb)[swash])) if swash.any() else float(np.mean(zs[:, 0]))
-        eta = max(eta, float(np.mean(zs[:, 0])))
+        eta = float(np.max(np.asarray(zb_xb)[swash])) if swash.any() else zs_offshore
+        eta = max(eta, zs_offshore)
         h_col = np.where(cov > 0.5, h_col, self.m.s.h_water)
         self.storm = dict(eta=eta, h=h_col, f_wet=np.where(cov > 0.5, f_col, 1.0))
         return self.storm

@@ -145,3 +145,32 @@ def test_released_sediment_goes_to_toe():
     c.place_released_sediment(T_water=1.0, S_water=30.0, eta=-0.5 + 1e-9)  # the whole ground is 'dry'
     dV = np.sum((c.bed_level() - zb0) * m.grid.dx)
     assert dV == pytest.approx(0.6 / 0.6)
+
+
+def test_storm_tolerates_dry_nans():
+    """XBeach writes NaN wave height (and water level) on dry nodes."""
+    m = beach_model(thaw_depth=1.0)
+    c = Thermal2DVCoupler(m)
+    x_xb = np.linspace(0.25, 9.75, 20)
+    zb_xb = np.linspace(-1.0, 1.0, 20)
+    zs = np.full((50, 20), 0.3)
+    zs[:, 15:] = np.nan
+    H = np.where(zb_xb < 0.3, 0.4, np.nan)
+    storm = c.set_storm(x_xb, zb_xb, zs, H, T_wave=6.0)
+    assert np.all(np.isfinite(storm["h"])) and np.isfinite(storm["eta"])
+
+
+def test_storm_stats_match_series():
+    """Gaussian swash statistics give the same wetted fraction as a Gaussian time series."""
+    m = beach_model(thaw_depth=1.0)
+    c = Thermal2DVCoupler(m, h_bounds=(10.0, 1e5))
+    x_xb = np.linspace(0.25, 9.75, 20)
+    zb_xb = np.linspace(-1.0, 1.0, 20)
+    rng = np.random.default_rng(0)
+    zs = 0.2 + 0.3 * rng.standard_normal((20000, 1)) + 0.0 * x_xb[None, :]
+    zs = np.maximum(zs, zb_xb[None, :])  # dry: zs = zb
+    series = c.set_storm(x_xb, zb_xb, zs, H=np.full(20, 0.5), T_wave=8.0)
+    f_series = c.storm["f_wet"].copy()
+    stats = c.set_storm_stats(x_xb, zb_xb, np.full(20, 0.2), np.full(20, 0.3), zs.max(axis=0), np.full(20, 0.5), 8.0)
+    assert np.allclose(stats["f_wet"], f_series, atol=0.02)
+    assert stats["eta"] == pytest.approx(series["eta"], abs=0.11)

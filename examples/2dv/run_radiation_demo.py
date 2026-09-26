@@ -180,7 +180,7 @@ def plot(ds):
     ax.set_ylabel("thaw depth into the face (m)")
     ax2.set_ylabel("eroded sediment (m$^3$ m$^{-1}$), dashed")
     ax.text(0.02, 0.95, "(c)", transform=ax.transAxes, va="top")
-    ax.legend(loc="center left", fontsize=9)
+    ax.legend(loc="center right", fontsize=9)
 
     # (d) temperature difference geometry - legacy
     ax = fig.add_subplot(gs[1, 1])
