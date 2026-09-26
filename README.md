@@ -150,7 +150,7 @@ arctic-xbeach/
 │   └── thermal2dv/         # 2DV water-soil-ice thermal model (experimental)
 ├── examples/
 │   ├── analytical/         # Validation test cases
-│   ├── 2dv/                # 2DV demos: ice block, bluff niche, Barter transect
+│   ├── 2dv/                # 2DV demos: flume block, bluff niche, Barter transect, analytical suite
 │   └── case_studies/
 │       └── barter_island/  # Primary case study
 │           ├── config.yaml

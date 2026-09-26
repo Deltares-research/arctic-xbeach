@@ -32,9 +32,9 @@ def plot_phase(ax, ds, it, rasterized=True):
     return m
 
 
-def phase_legend(ax, loc="lower left", classes=range(6), ncol=3):
+def phase_legend(ax, loc="lower left", classes=range(6), ncol=3, **kwargs):
     handles = [Patch(facecolor=PHASE_COLORS[c], edgecolor="0.5", label=CLASS_NAMES[c]) for c in classes]
-    ax.legend(handles=handles, loc=loc, ncol=ncol, frameon=True, framealpha=0.9)
+    ax.legend(handles=handles, loc=loc, ncol=ncol, frameon=True, framealpha=0.9, **kwargs)
 
 
 def plot_temperature(ax, ds, it, vlim=10.0, rasterized=True, contour=True):

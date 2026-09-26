@@ -9,7 +9,7 @@ Run from the repository root with the project environment:
 ```bash
 python -m pytest tests/test_thermal2dv.py        # verification, 12 tests, ~25 s
 python examples/2dv/run_analytical_suite.py      # analytical figure, ~1 min
-python examples/2dv/run_ice_block.py             # ~10 s
+python examples/2dv/run_flume_block.py           # ~45 s
 python examples/2dv/run_bluff_niche.py           # ~1.5 min
 python examples/2dv/run_barter_transect.py       # ~20 min for one year
 ```
@@ -72,11 +72,29 @@ to `examples/2dv/output/<case>/` (`*.nc` is git-ignored; the PNGs are committed)
 | Saline freezing | liquid fraction of saline pore water during freezing, S = 5, 15, 35 | on the liquidus to 1e-15 |
 | Brine rejection | sea water freezing for 10 days | brine on the liquidus; consolidated ice 8–26 psu; water below enriched to 32.1 psu at its own freezing point; salt budget 1e-10, energy 4e-11 |
 
-## Demo 1: ice block (`run_ice_block.py`)
+## Demo 1: frozen block in a wave flume (`run_flume_block.py`)
 
-A 1 m × 1 m ice block at 0 °C sits in a tank of well-mixed 5 °C water. The top and both side faces
-retreat at v = h ΔT / L_v = 0.65 m/day, and the model follows the analytic area (W − 2vt)(H − vt)
-until the block is gone (`ice_block_area.png`). Energy closes to 1e-8.
+This is a laboratory-scale analogue of a bluff, after the cold-room flume experiments with frozen
+sediment blocks (Costard et al. 2003; Dupeyrat et al. 2011).
+
+- **Setup.** A 2 m × 1 m block of ice-rich frozen silt (65% ice, −5 °C) stands against the
+  landward wall of an 8 m flume.
+- **Water.** Fresh water 0.4 m deep is held at 5 °C by recirculation: a sponge at the wave-maker
+  end plus flushing. The waves are not resolved; they act only through the well-mixed water and
+  the face heat transfer coefficient h = 500 W m⁻² K⁻¹.
+- **Niche.** The submerged face melts and cuts a niche at the waterline. Before the first
+  failure it retreats at 0.92 m/day against the quasi-steady h ΔT / (L_v + C_f ΔT₀) = 0.95 m/day
+  (−4%).
+- **Failure.** The frozen part above the water becomes an overhang and drops into the niche once
+  the niche is 0.3 m deep (at 8, 15, 24 and 32 h).
+- **Armouring.** Each fallen block must melt before the face is exposed again, so after 36 h the
+  crest has retreated 0.61 m, about half the undisturbed rate.
+- **Budget.** Energy closes to 9e-9.
+
+Setting `PHI_S_BLOCK = 0` gives a pure ice block at 0 °C with the same geometry: it melts without
+failures at h ΔT / L_v. The unconfined pure-ice case (the three melting faces of a free block) is
+kept as a verification test and as panel (c) of the analytical suite.
+Figures: `flume_block_snapshots.png` (phase and temperature) and `flume_block_retreat.png`.
 
 ## Demo 2: bluff niche and block failure (`run_bluff_niche.py`)
 
