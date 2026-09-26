@@ -40,3 +40,21 @@ def test_missing_sst_falls_back_to_freezing(tmp_path):
     assert F.T_ref[0] == pytest.approx(-1.63, abs=0.02)  # masked SST (sea ice): freezing point at 30 psu
     F = f(3 * 3600.0, np.array([-2.0]))
     assert F.T_ref[0] == pytest.approx(3.0)
+
+
+def test_missing_box_years_filled_by_climatology(tmp_path):
+    """fal missing for a whole year is filled from the day-of-year climatology, not bridged."""
+    time = np.arange(np.datetime64("2015-01-01T00:00"), np.datetime64("2018-01-01T00:00"), np.timedelta64(1, "D"))
+    doy = (time - time.astype("datetime64[Y]")).astype("timedelta64[D]").astype(int)
+    fal = np.where((doy > 160) & (doy < 270), 0.15, 0.75)
+    fal = np.where(time.astype("datetime64[Y]") == np.datetime64("2016", "Y"), np.nan, fal)  # 2016 missing
+    n = len(time)
+    ds = xr.Dataset({"ssrd": ("time", np.zeros(n)), "strd": ("time", np.full(n, 250.0)),
+                     "t2m": ("time", np.full(n, 270.0)), "u10": ("time", np.ones(n)), "v10": ("time", np.zeros(n)),
+                     "fal": ("time", fal)}, coords={"time": time})
+    ds.to_netcdf(tmp_path / "pt.nc")
+    f = era5_forcing(tmp_path / "pt.nc", "2016-07-15T00:00", end_time_utc="2016-07-20T00:00")
+    assert f(0.0, np.array([-1.0])).albedo_land == pytest.approx(0.15)
+    f = era5_forcing(tmp_path / "pt.nc", "2016-01-15T00:00", end_time_utc="2016-01-20T00:00")
+    assert f(0.0, np.array([-1.0])).albedo_land == pytest.approx(0.75)
+    assert f.filled["fal"] == pytest.approx(1.0)

@@ -1,14 +1,29 @@
-"""Merge per-year ERA5 downloads for Barter Island into model-ready NetCDF files.
+"""Merge ERA5 downloads for Barter Island into model-ready NetCDF files.
 
-Reads every data/raw/era5_<year>.nc present plus data/raw/lsm_static.nc, harmonises the
-new-CDS layout (valid_time -> time, drops number/expver), converts accumulated radiation
-from J m-2 to W m-2, and writes
+Two sources are combined:
+  - point time series from reanalysis-era5-single-levels-timeseries
+    (download_era5_barter_timeseries.py -> data/raw/era5_ts_land.nc, era5_ts_ocean.nc):
+    ssrd, fdir, strd, t2m, d2m, u10, v10, sp, tp, skt at the land point and sst, skt at the
+    ocean point, whole record;
+  - per-year 6-point box downloads from reanalysis-era5-single-levels
+    (download_era5_barter.py -> data/raw/era5_<year>.nc): the variables the time-series
+    dataset lacks (ssr, str, sf, fal, sd, rsn, siconc), plus data/raw/lsm_static.nc.
+Both are the same ERA5 fields on the same 0.25 deg grid; over 2016 they agree to float32
+rounding with the same time stamps (checked 2026-09-26). The time-series file wins for the
+variables it holds; box variables are NaN for box years not downloaded yet.
 
-  data/era5_barter_<y0>-<y1>.nc   all box points, dims (time, latitude, longitude),
-                                   plus land_sea_mask(latitude, longitude)
+The new-CDS layout is harmonised (valid_time -> time, number/expver dropped), accumulated
+radiation is converted from J m-2 to W m-2, and two files are written:
+
+  data/era5_barter_<y0>-<y1>.nc   box points for the box years present, dims (time, latitude,
+                                   longitude), plus land_sea_mask(latitude, longitude)
   data/era5_barter_point.nc       the grid point nearest to Barter Island with
-                                   land_sea_mask >= 0.5 (falls back to nearest point),
-                                   plus SST / sea-ice cover at the nearest ocean point
+                                   land_sea_mask >= 0.5 (falls back to nearest point) over the
+                                   full time-series record, plus SST / sea-ice cover / skin
+                                   temperature at the nearest ocean point (*_ocean)
+
+Each point variable carries `source` and `coverage` attributes; the global `coverage`
+attribute lists them all.
 
 TIME CONVENTION: accumulated fields (ssrd, fdir, strd, ssr, str, sf, tp) keep the ERA5
 time stamp t but represent the mean (radiation) or total (sf, tp) over the PRECEDING HOUR
@@ -22,15 +37,21 @@ import xarray as xr
 
 # === CONFIGURATION ===
 HERE = Path(__file__).resolve().parent
-RAW_DIR = HERE / "data" / "raw"          # per-year raw downloads
+RAW_DIR = HERE / "data" / "raw"          # raw downloads
 OUT_DIR = HERE / "data"                  # merged outputs
 SITE_LAT, SITE_LON = 70.13, -143.7       # Barter Island (Kaktovik)
 LAND_THRESHOLD = 0.5                     # land_sea_mask >= this counts as land
+TS_FILES = {"land": RAW_DIR / "era5_ts_land.nc", "ocean": RAW_DIR / "era5_ts_ocean.nc"}
+BOX_AREA = "70.25, -144.0, 70.0, -143.5"
+TS_DATASET = "reanalysis-era5-single-levels-timeseries"
+BOX_DATASET = "reanalysis-era5-single-levels"
+GRID_TOL = 1e-3                          # time-series point must sit on the selected grid point
 
 ACCUM_RAD = ["ssrd", "fdir", "strd", "ssr", "str"]   # J m-2 per hour -> W m-2
 ACCUM_DEPTH = ["sf", "tp"]                             # m per hour, kept as depth
 ACCUM_NOTE = ("accumulated over the preceding hour [t-1h, t] and stamped at t; "
               "centre at t-30 min when interpolating")
+OCEAN_VARS = ("sst", "siconc", "skt")                 # also written at the nearest ocean point
 
 # units / long names written to the output (overrides whatever the raw file carries)
 META = {
@@ -56,7 +77,7 @@ META = {
 }
 
 
-def open_year(path: Path) -> xr.Dataset:
+def open_raw(path: Path) -> xr.Dataset:
     ds = xr.load_dataset(path)
     if "valid_time" in ds.dims or "valid_time" in ds.coords:
         ds = ds.rename({"valid_time": "time"})
@@ -67,59 +88,100 @@ def open_year(path: Path) -> xr.Dataset:
     return ds
 
 
-def load_all() -> tuple[xr.Dataset, list[int]]:
-    files = sorted(RAW_DIR.glob("era5_*.nc"))
-    if not files:
-        raise SystemExit(f"no raw files in {RAW_DIR}")
+def load_box() -> tuple[xr.Dataset | None, list[int]]:
+    """All box years present, concatenated in time; variables missing in a year are NaN."""
+    files = sorted(RAW_DIR.glob("era5_[0-9][0-9][0-9][0-9].nc"))
     years = [int(f.stem.split("_")[1]) for f in files]
-    ds = xr.concat([open_year(f) for f in files], dim="time", data_vars="all",
-                   coords="minimal", compat="override", join="outer")
+    if not files:
+        return None, years
+    parts = [open_raw(f) for f in files]
+    names = sorted({v for p in parts for v in p.data_vars})
+    for i, p in enumerate(parts):  # 2016 holds all variables, later years only the box-only ones
+        for v in names:
+            if v not in p:
+                p[v] = xr.full_like(next(q[v] for q in parts if v in q).isel(time=0, drop=True)
+                                    .broadcast_like(p.time), np.nan)
+        parts[i] = p[names]
+    ds = xr.concat(parts, dim="time", data_vars="all", coords="minimal", compat="override", join="outer")
     ds = ds.sortby("time")
     ds = ds.isel(time=~ds.get_index("time").duplicated())
-    static = RAW_DIR / "lsm_static.nc"
-    if static.exists():
-        ds["lsm"] = open_year(static)["lsm"].isel(time=0, drop=True)
-    ds = ds.sortby("latitude")  # ERA5 delivers north-to-south
-    return ds, years
+    return ds.sortby("latitude"), years  # ERA5 delivers north-to-south
 
 
-def convert(ds: xr.Dataset) -> xr.Dataset:
+def load_lsm() -> xr.DataArray:
+    lsm = open_raw(RAW_DIR / "lsm_static.nc")["lsm"]
+    if "time" in lsm.dims:
+        lsm = lsm.isel(time=0, drop=True)
+    return lsm.drop_vars("time", errors="ignore").sortby("latitude")
+
+
+def load_ts(name: str, point: dict) -> xr.Dataset | None:
+    """Time-series file for one point, checked to sit on the selected grid point."""
+    path = TS_FILES[name]
+    if not path.exists():
+        print(f"warning: {path.name} not found; {name}-point variables fall back to the box")
+        return None
+    ds = open_raw(path)
+    lat, lon = float(ds["latitude"]), float(ds["longitude"])
+    if abs(lat - point["latitude"]) > GRID_TOL or abs(lon - point["longitude"]) > GRID_TOL:
+        raise SystemExit(f"{path.name} holds ({lat}, {lon}) but the {name} point is "
+                         f"({point['latitude']}, {point['longitude']}); re-download for that point")
+    return ds.drop_vars(["latitude", "longitude"])
+
+
+def to_output(da: xr.DataArray, name: str) -> xr.DataArray:
+    """Unit conversion, float32 and output attributes for variable `name`."""
+    units, long_name, std_name = META[name]
+    if name in ACCUM_RAD:
+        da = da / 3600.0
+    da = da.astype("float32")
+    da.attrs = {"units": units, "long_name": long_name}
+    if std_name:
+        da.attrs["standard_name"] = std_name
+    if name in ACCUM_RAD:
+        da.attrs["cell_methods"] = "time: mean (interval: 1 hour)"
+        da.attrs["time_convention"] = f"mean flux {ACCUM_NOTE}; converted from J m-2 by /3600"
+    elif name in ACCUM_DEPTH:
+        da.attrs["cell_methods"] = "time: sum (interval: 1 hour)"
+        da.attrs["time_convention"] = f"total {ACCUM_NOTE}"
+    elif name != "lsm":
+        da.attrs["time_convention"] = "instantaneous, valid at t"
+    return da
+
+
+def convert_box(ds: xr.Dataset, lsm: xr.DataArray) -> xr.Dataset:
     out = xr.Dataset(coords={"time": ds.time, "latitude": ds.latitude, "longitude": ds.longitude})
-    for name, (units, long_name, std_name) in META.items():
-        if name not in ds:
-            print(f"warning: {name} not in raw data")
-            continue
-        da = ds[name]
-        if name == "lsm" and "time" in da.dims:
-            da = da.isel(time=0, drop=True)
-        elif name in ACCUM_RAD:
-            da = da / 3600.0
-        da = da.astype("float32")
-        da.attrs = {"units": units, "long_name": long_name}
-        if std_name:
-            da.attrs["standard_name"] = std_name
-        if name in ACCUM_RAD:
-            da.attrs["cell_methods"] = "time: mean (interval: 1 hour)"
-            da.attrs["time_convention"] = f"mean flux {ACCUM_NOTE}; converted from J m-2 by /3600"
-        elif name in ACCUM_DEPTH:
-            da.attrs["cell_methods"] = "time: sum (interval: 1 hour)"
-            da.attrs["time_convention"] = f"total {ACCUM_NOTE}"
-        elif name != "lsm":
-            da.attrs["time_convention"] = "instantaneous, valid at t"
-        out[name if name != "lsm" else "land_sea_mask"] = da
-    out["latitude"].attrs = {"units": "degrees_north", "standard_name": "latitude"}
-    out["longitude"].attrs = {"units": "degrees_east", "standard_name": "longitude"}
-    out["time"].attrs = {"standard_name": "time", "long_name": "ERA5 time stamp (UTC)"}
+    for name in META:
+        if name in ds and name != "lsm":
+            out[name] = to_output(ds[name], name)
+    out["land_sea_mask"] = to_output(lsm, "lsm")
+    set_coord_attrs(out)
     return out
 
 
-def check_completeness(ds: xr.Dataset, years: list[int]) -> str:
-    t = ds.get_index("time")
+def set_coord_attrs(ds: xr.Dataset) -> None:
+    for c, attrs in (("latitude", {"units": "degrees_north", "standard_name": "latitude"}),
+                     ("longitude", {"units": "degrees_east", "standard_name": "longitude"}),
+                     ("time", {"standard_name": "time", "long_name": "ERA5 time stamp (UTC)"})):
+        if c in ds.coords:
+            ds[c].attrs = attrs
+
+
+def year_ranges(years: list[int]) -> str:
+    """[1979, 1980, 1981, 2016] -> '1979-1981, 2016'."""
+    if not years:
+        return "none"
+    out, start = [], years[0]
+    for a, b in zip(years, years[1:] + [None]):
+        if b != a + 1:
+            out.append(f"{start}" if start == a else f"{start}-{a}")
+            start = b
+    return ", ".join(out)
+
+
+def check_completeness(t: pd.DatetimeIndex, label: str) -> str:
     full = pd.date_range(t[0], t[-1], freq="h")
-    n_missing = len(full.difference(t))
-    missing_years = sorted(set(range(min(years), max(years) + 1)) - set(years))
-    msg = (f"time {t[0]} .. {t[-1]}, {len(t)} steps, {n_missing} missing hours within span; "
-           f"years present {len(years)}; years missing in span: {missing_years or 'none'}")
+    msg = f"{label}: {t[0]} .. {t[-1]}, {len(t)} steps, {len(full.difference(t))} missing hours within span"
     print(msg)
     return msg
 
@@ -149,52 +211,130 @@ def encoding_for(ds: xr.Dataset) -> dict:
     return enc
 
 
+def overlap_report(ts: xr.Dataset, box_pt: xr.Dataset | None, label: str) -> list[str]:
+    """Max |time series - box| per shared variable over the box years (output units)."""
+    lines = []
+    if box_pt is None:
+        return lines
+    common = ts.get_index("time").intersection(box_pt.get_index("time"))
+    for v in ts.data_vars:
+        if v not in box_pt or len(common) == 0:
+            continue
+        a = to_output(ts[v].sel(time=common), v).values.astype(float)
+        b = to_output(box_pt[v].sel(time=common), v).values.astype(float)
+        ok = np.isfinite(a) & np.isfinite(b)
+        if ok.any():
+            lines.append(f"{label} {v}: max|ts-box| {np.max(np.abs(a[ok] - b[ok])):.3g} "
+                         f"{META[v][0]} over {ok.sum()} h")
+    for line in lines:
+        print(f"overlap {line}")
+    return lines
+
+
 def main() -> None:
-    raw, years = load_all()
-    completeness = check_completeness(raw, years)
-    ds = convert(raw)
-    y0, y1 = min(years), max(years)
-    common = {
-        "title": "ERA5 hourly single-level fields around Barter Island, Alaska",
-        "source": "Copernicus Climate Change Service, reanalysis-era5-single-levels (Hersbach et al., 2020)",
-        "area_NWSE": "70.25, -144.0, 70.0, -143.5",
-        "years_present": ",".join(str(y) for y in years),
-        "completeness": completeness,
-        "time_convention": (f"Accumulated fields ({', '.join(ACCUM_RAD + ACCUM_DEPTH)}) are {ACCUM_NOTE}. "
-                            "Instantaneous fields are valid at t."),
-        "history": f"{pd.Timestamp.now():%Y-%m-%d %H:%M} merge_era5_barter.py",
-    }
-
-    # Remove stale merged files from earlier runs with a different year range
-    target = OUT_DIR / f"era5_barter_{y0}-{y1}.nc"
-    for old in OUT_DIR.glob("era5_barter_*-*.nc"):
-        if old != target:
-            print(f"removing stale {old.name}")
-            old.unlink()
-
-    ds.attrs = dict(common)
-    ds.to_netcdf(target, encoding=encoding_for(ds))
-    print(f"wrote {target} ({target.stat().st_size / 1e6:.1f} MB)")
-
-    land, ocean = pick_points(ds["land_sea_mask"])
+    box, box_years = load_box()
+    lsm = load_lsm()
+    land, ocean = pick_points(lsm)
     print(f"land point:  lat {land['latitude']:.2f}, lon {land['longitude']:.2f}, "
           f"lsm {land['lsm']:.3f}, {land['dist_km']:.1f} km from site")
     if ocean:
         print(f"ocean point: lat {ocean['latitude']:.2f}, lon {ocean['longitude']:.2f}, "
               f"lsm {ocean['lsm']:.3f}, {ocean['dist_km']:.1f} km from site")
+    print(f"box years present: {year_ranges(box_years)}")
+    common = {
+        "title": "ERA5 hourly single-level fields around Barter Island, Alaska",
+        "source": (f"Copernicus Climate Change Service, {TS_DATASET} and {BOX_DATASET} "
+                   "(Hersbach et al., 2020)"),
+        "area_NWSE": BOX_AREA,
+        "years_present": ",".join(str(y) for y in box_years),
+        "time_convention": (f"Accumulated fields ({', '.join(ACCUM_RAD + ACCUM_DEPTH)}) are {ACCUM_NOTE}. "
+                            "Instantaneous fields are valid at t."),
+        "history": f"{pd.Timestamp.now():%Y-%m-%d %H:%M} merge_era5_barter.py",
+    }
 
-    pt = ds.sel(latitude=land["latitude"], longitude=land["longitude"])
+    # --- box file (box years only) ---
+    if box is not None:
+        y0, y1 = min(box_years), max(box_years)
+        target = OUT_DIR / f"era5_barter_{y0}-{y1}.nc"
+        for old in OUT_DIR.glob("era5_barter_*-*.nc"):  # stale files with another year range
+            if old != target:
+                print(f"removing stale {old.name}")
+                old.unlink()
+        ds = convert_box(box, lsm)
+        ds.attrs = dict(common, source=f"Copernicus Climate Change Service, {BOX_DATASET} (Hersbach et al., 2020)",
+                        completeness=check_completeness(ds.get_index("time"), "box"),
+                        note=("years after the switch to the time-series dataset hold only the box-only "
+                              "variables (ssr, str, sf, fal, sd, rsn, siconc); others are NaN there"))
+        ds.to_netcdf(target, encoding=encoding_for(ds))
+        print(f"wrote {target} ({target.stat().st_size / 1e6:.1f} MB)")
+
+    # --- point file (full time-series record) ---
+    ts = {"land": load_ts("land", land), "ocean": load_ts("ocean", ocean) if ocean else None}
+    def box_at(p: dict | None) -> xr.Dataset | None:
+        if box is None or p is None:
+            return None
+        return box.sel(latitude=p["latitude"], longitude=p["longitude"]).drop_vars(["latitude", "longitude"])
+
+    box_pt = {"land": box_at(land), "ocean": box_at(ocean)}
+    times = [d.get_index("time") for d in (ts["land"], ts["ocean"], box_pt["land"]) if d is not None]
+    time = times[0]
+    for t in times[1:]:
+        time = time.union(t)
+    time = pd.DatetimeIndex(time).sort_values()
+
+    pt_label = {k: (None if p is None else f"lat {p['latitude']}, lon {p['longitude']}")
+                for k, p in (("land", land), ("ocean", ocean))}
+    ts_span = {}
+    for k, d in ts.items():
+        if d is not None:
+            ti = d.get_index("time")
+            ts_span[k] = f"{ti[0]:%Y-%m-%d %H:%M} .. {ti[-1]:%Y-%m-%d %H:%M}"
+    box_cov = f"box years {year_ranges(box_years)}; NaN in other years"
+
+    def pick(name: str, where: str) -> xr.DataArray | None:
+        """Variable `name` at point `where`, from the time series if it has it, else the box."""
+        if ts[where] is not None and name in ts[where]:
+            da = to_output(ts[where][name], name).reindex(time=time)
+            da.attrs.update(source=f"{TS_DATASET}, {pt_label[where]}", coverage=ts_span[where])
+            return da
+        if box_pt[where] is not None and name in box_pt[where]:
+            da = to_output(box_pt[where][name], name).reindex(time=time)
+            da.attrs.update(source=f"{BOX_DATASET} (box), {pt_label[where]}", coverage=box_cov)
+            return da
+        return None
+
+    pt = xr.Dataset(coords={"time": time})
+    for name in META:
+        if name == "lsm":
+            continue
+        da = pick(name, "land")
+        if da is None:
+            print(f"warning: {name} not available at the land point")
+            continue
+        pt[name] = da
+    pt["land_sea_mask"] = to_output(lsm.sel(latitude=land["latitude"], longitude=land["longitude"]).drop_vars(
+        ["latitude", "longitude"]), "lsm")
     if ocean:
         # SST and sea ice are masked over land; carry the nearest ocean point alongside
-        op = ds.sel(latitude=ocean["latitude"], longitude=ocean["longitude"])
-        for v in ("sst", "siconc", "skt"):
-            if v not in op:
+        for v in OCEAN_VARS:
+            da = pick(v, "ocean")
+            if da is None:
                 continue
-            da =op[v].drop_vars(["latitude", "longitude"])
-            da.attrs = dict(op[v].attrs, long_name=f"{op[v].attrs['long_name']} at nearest ocean point",
+            da.attrs.update(long_name=f"{META[v][1]} at nearest ocean point",
                             point=f"lat {ocean['latitude']}, lon {ocean['longitude']}, lsm {ocean['lsm']:.3f}")
             pt[f"{v}_ocean"] = da
+    pt = pt.assign_coords(latitude=land["latitude"], longitude=land["longitude"])
+    set_coord_attrs(pt)
+
+    overlap = overlap_report(ts["land"], box_pt["land"], "land") if ts["land"] is not None else []
+    if ts["ocean"] is not None:
+        overlap += overlap_report(ts["ocean"], box_pt["ocean"], "ocean")
+    coverage = "; ".join(f"{v}: {pt[v].attrs['coverage']} ({pt[v].attrs['source'].split(',')[0]})"
+                         for v in pt.data_vars if "coverage" in pt[v].attrs)
     pt.attrs = dict(common,
+                    completeness=check_completeness(pt.get_index("time"), "point"),
+                    coverage=coverage,
+                    overlap_check=("; ".join(overlap) if overlap else "no overlap between sources"),
                     site=f"Barter Island, lat {SITE_LAT}, lon {SITE_LON}",
                     point_selection=(f"nearest grid point with land_sea_mask >= {LAND_THRESHOLD}: "
                                      f"lat {land['latitude']}, lon {land['longitude']}, lsm {land['lsm']:.3f}, "
@@ -202,8 +342,12 @@ def main() -> None:
                     ocean_point=("none in box" if not ocean else
                                  f"lat {ocean['latitude']}, lon {ocean['longitude']}, lsm {ocean['lsm']:.3f}, "
                                  f"{ocean['dist_km']:.1f} km from site"))
+    for v in pt.data_vars:
+        print(f"  {v:13s} {pt[v].attrs.get('coverage', '')}")
     point_file = OUT_DIR / "era5_barter_point.nc"
-    pt.to_netcdf(point_file, encoding=encoding_for(pt))
+    tmp = point_file.with_suffix(".tmp.nc")
+    pt.to_netcdf(tmp, encoding=encoding_for(pt))
+    tmp.replace(point_file)
     print(f"wrote {point_file} ({point_file.stat().st_size / 1e6:.1f} MB)")
 
 

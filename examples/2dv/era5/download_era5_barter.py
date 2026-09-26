@@ -1,16 +1,22 @@
 """Download ERA5 hourly single-level data for Barter Island, Alaska (one file per year).
 
-Output: data/raw/era5_<year>.nc (all variables for one year) and data/raw/lsm_static.nc
+Only the variables that the fast point dataset `reanalysis-era5-single-levels-timeseries`
+lacks are fetched here (fal, ssr, str, sd, rsn, sf, siconc); the others come from
+download_era5_barter_timeseries.py, and merge_era5_barter.py combines both.
+
+Output: data/raw/era5_<year>.nc (VARIABLES for one year) and data/raw/lsm_static.nc
 (land-sea mask, one time step). Years already present and valid are skipped, so re-running
-resumes an interrupted download. Failed requests are retried with a growing back-off.
+resumes an interrupted download. Chunk files already in data/raw/parts/ are reused whatever
+variables they were requested with (e.g. parts of the earlier all-variable run), so only
+variables not yet on disk are requested. Failed requests are retried with a growing back-off.
 
 CDS cost limit: the new CDS charges (fields x grid points) against a limit of 121 000 per
 request. The 6-point box costs 6 x 8784 = 52 704 per variable per (leap) year, so a full
 year of all variables in one request is refused ("cost limits exceeded"). Each year is
-therefore split into chunks of VARS_PER_REQUEST variables (9 requests per year). All
+therefore split into chunks of VARS_PER_REQUEST variables. All
 chunks of all years go through one pool of CONCURRENT_REQUESTS in-flight requests, in year
 order, so CDS queue waits (often 1 h+) overlap; each year is merged into one file as soon
-as its chunks are in.
+as its chunks are in. With the 7 box-only variables that is 4 requests per year.
 
 The new CDS writes instantaneous and accumulated fields to separate NetCDF files and may
 return a zip even when `download_format: unarchived` is requested; zips are detected and
@@ -38,28 +44,33 @@ LOG_FILE = HERE / "data" / "download.log"            # appended log
 # Validation period first, then the rest of the record
 YEARS = list(range(2010, 2026)) + list(range(1979, 2010))
 AREA = [70.25, -144.0, 70.0, -143.5]                 # N, W, S, E around Barter Island (70.13 N, 143.7 W)
-# Ordered so that chunks mostly hold one CDS stream (accumulated vs instantaneous)
+# Variables absent from reanalysis-era5-single-levels-timeseries (the rest come from there).
+# Paired in chunk order: (str, sf) and (rsn, siconc) equal chunks of the earlier all-variable
+# run, so its parts on disk are reused.
 VARIABLES = {
-    # accumulated (J m-2 or m over the hour ending at the time stamp)
-    "surface_solar_radiation_downwards": "ssrd",
-    "total_sky_direct_solar_radiation_at_surface": "fdir",
-    "surface_thermal_radiation_downwards": "strd",
-    "surface_net_solar_radiation": "ssr",
-    "surface_net_thermal_radiation": "str",
+    "surface_net_thermal_radiation": "str",          # accumulated (J m-2 or m over the hour ending at the stamp)
     "snowfall": "sf",
-    "total_precipitation": "tp",
-    "forecast_albedo": "fal",                        # instantaneous from here on
-    "2m_temperature": "t2m",
-    "2m_dewpoint_temperature": "d2m",
-    "10m_u_component_of_wind": "u10",
-    "10m_v_component_of_wind": "v10",
-    "surface_pressure": "sp",
-    "snow_depth": "sd",
-    "snow_density": "rsn",
+    "snow_density": "rsn",                           # instantaneous
     "sea_ice_cover": "siconc",
-    "sea_surface_temperature": "sst",
-    "skin_temperature": "skt",
+    "surface_net_solar_radiation": "ssr",            # accumulated
+    "forecast_albedo": "fal",                        # instantaneous
+    "snow_depth": "sd",
 }
+# Jobs the earlier all-variable run had already queued at CDS when it was stopped
+# (2026-09-26), as (CDS request ID, variables). Their results are fetched by request ID
+# instead of queueing the chunk again; if a job is gone (expired, deleted, failed) the same
+# chunk is submitted afresh. Only chunks that still hold a missing VARIABLE are used; the
+# extra variable (strd, tp, sp) is dropped when the year is assembled.
+LEGACY_CHUNKS = {
+    2010: [("5fc8414a-0303-41f0-8b27-ea22070f36ae", ("surface_thermal_radiation_downwards", "surface_net_solar_radiation")),
+           ("84d852fd-71c0-4807-9dae-e62a666369ee", ("total_precipitation", "forecast_albedo")),
+           ("da7293c4-8121-4853-9978-e1d417fe5c73", ("surface_pressure", "snow_depth")),
+           ("87338336-bea9-4e98-9b17-fbae296e97fd", ("snow_density", "sea_ice_cover"))],
+    2011: [("d0833613-22cc-4d4a-bbff-ae1fc694eaf6", ("surface_thermal_radiation_downwards", "surface_net_solar_radiation"))],
+}
+SHORT_NAMES = {**VARIABLES,                           # CDS name -> NetCDF short name
+               "surface_thermal_radiation_downwards": "strd", "total_precipitation": "tp",
+               "surface_pressure": "sp"}
 STATIC_VARIABLE = "land_sea_mask"                    # downloaded once, one time step
 VARS_PER_REQUEST = 2                                 # 2 x 52 704 < 121 000 cost limit
 CONCURRENT_REQUESTS = 10                             # CDS requests in flight at once (all years share one pool)
@@ -143,11 +154,34 @@ def unzip_if_needed(path: Path) -> None:
     zpath.unlink()
 
 
-def retrieve(label: str, req: dict, out: Path, short_names: list[str], n_time: int | None) -> bool:
-    """Retrieve one request to `out` with retries; returns True when a valid file exists."""
+def fetch_existing_job(label: str, request_id: str, tmp: Path) -> bool:
+    """Wait for and download a job already queued at CDS; False if it is gone or failed."""
+    try:
+        log.info(f"{label}: attaching to queued CDS job {request_id}")
+        t0 = time.time()
+        cdsapi.Client(progress=False).client.get_remote(request_id).download(str(tmp))
+        log.info(f"{label}: queued job delivered after {(time.time() - t0) / 60:.1f} min")
+        return True
+    except Exception as exc:
+        log.warning(f"{label}: queued job {request_id} not usable ({exc}); submitting afresh")
+        return False
+
+
+def retrieve(label: str, req: dict, out: Path, short_names: list[str], n_time: int | None,
+             request_id: str | None = None) -> bool:
+    """Retrieve one request to `out` with retries; returns True when a valid file exists.
+    With `request_id`, first try to collect that already-queued CDS job."""
     if file_is_valid(out, short_names, n_time):
         return True
     tmp = out.with_suffix(".part")
+    if request_id and fetch_existing_job(label, request_id, tmp):
+        try:
+            unzip_if_needed(tmp)
+            tmp.replace(out)
+            if file_is_valid(out, short_names, n_time):
+                return True
+        except Exception as exc:
+            log.warning(f"{label}: queued job result unusable ({exc}); submitting afresh")
     wait = RETRY_WAIT_S
     for attempt in range(1, MAX_ATTEMPTS + 1):
         try:
@@ -176,17 +210,35 @@ def download_static() -> bool:
                     RAW_DIR / "lsm_static.nc", ["lsm"], None)
 
 
-def year_jobs(year: int) -> list[tuple]:
-    """(label, request, part_path, short_names, n_time) for each variable chunk of a year."""
+def parts_on_disk(year: int) -> dict[str, Path]:
+    """Short name -> valid chunk file already in PART_DIR for this year (any chunk layout)."""
+    have = {}
+    for p in sorted(PART_DIR.glob(f"era5_{year}_*.nc")):
+        shorts = p.stem.split("_")[2:]
+        if file_is_valid(p, shorts, expected_hours(year)):
+            have.update({s: p for s in shorts})
+    return have
+
+
+def year_jobs(year: int) -> tuple[list[tuple], list[Path]]:
+    """Jobs (label, request, part_path, short_names, n_time, request_id) for the VARIABLES of
+    a year that are not on disk yet, and the part files already on disk that are needed."""
     n_time = expected_hours(year)
-    names = list(VARIABLES)
+    have = parts_on_disk(year)
+    reused = sorted({have[s] for s in VARIABLES.values() if s in have})
+    todo = [v for v in VARIABLES if VARIABLES[v] not in have]
+    chunks = []  # (variables, CDS request ID of an already-queued job or None)
+    for rid, chunk in LEGACY_CHUNKS.get(year, []):
+        if any(v in todo for v in chunk):
+            chunks.append((list(chunk), rid))
+            todo = [v for v in todo if v not in chunk]
+    chunks += [(todo[i:i + VARS_PER_REQUEST], None) for i in range(0, len(todo), VARS_PER_REQUEST)]
     jobs = []
-    for i in range(0, len(names), VARS_PER_REQUEST):
-        chunk = names[i:i + VARS_PER_REQUEST]
-        shorts = [VARIABLES[v] for v in chunk]
+    for chunk, rid in chunks:
+        shorts = [SHORT_NAMES[v] for v in chunk]
         part = PART_DIR / f"era5_{year}_{'_'.join(shorts)}.nc"
-        jobs.append((f"{year} [{','.join(shorts)}]", request(year, chunk), part, shorts, n_time))
-    return jobs
+        jobs.append((f"{year} [{','.join(shorts)}]", request(year, chunk), part, shorts, n_time, rid))
+    return jobs, reused
 
 
 def year_done(year: int) -> bool:
@@ -198,6 +250,7 @@ def assemble_year(year: int, parts: list[Path]) -> bool:
     out = RAW_DIR / f"era5_{year}.nc"
     ds = xr.merge([xr.load_dataset(p) for p in parts], compat="override", join="outer",
                   combine_attrs="drop_conflicts")
+    ds = ds[list(VARIABLES.values())]  # drop extras from reused / legacy chunks
     tmp = out.with_suffix(".part")
     ds.to_netcdf(tmp)
     tmp.replace(out)
@@ -225,13 +278,19 @@ def download_years(years: list[int]) -> list[int]:
             todo.append(y)
     failed = []
     with ThreadPoolExecutor(max_workers=CONCURRENT_REQUESTS) as pool:
-        futures = {y: [(j[2], pool.submit(retrieve, *j)) for j in year_jobs(y)] for y in todo}
+        futures, reused = {}, {}
+        for y in todo:
+            jobs, reused[y] = year_jobs(y)
+            if reused[y]:
+                log.info(f"{y}: reusing parts {[p.name for p in reused[y]]}")
+            futures[y] = [(j[2], pool.submit(retrieve, *j)) for j in jobs]
+        log.info(f"{len(todo)} years to do, {sum(len(f) for f in futures.values())} requests queued")
         for y in todo:  # assemble in queue order; later years keep downloading meanwhile
             ok = [f.result() for _, f in futures[y]]
             if not all(ok):
                 log.error(f"{y}: {ok.count(False)} of {len(ok)} chunks failed; parts kept for resume")
                 failed.append(y)
-            elif not assemble_year(y, [p for p, _ in futures[y]]):
+            elif not assemble_year(y, reused[y] + [p for p, _ in futures[y]]):
                 failed.append(y)
     return failed
 
@@ -246,7 +305,7 @@ def main() -> None:
              f"{VARS_PER_REQUEST} variables per request, {CONCURRENT_REQUESTS} concurrent ===")
     download_static()
     failed = download_years(YEARS)
-    present = sorted(int(p.stem.split("_")[1]) for p in RAW_DIR.glob("era5_*.nc"))
+    present = sorted(int(p.stem.split("_")[1]) for p in RAW_DIR.glob("era5_[0-9][0-9][0-9][0-9].nc"))
     log.info(f"=== download loop finished; {len(present)} years present; failed: {failed or 'none'} ===")
     if RUN_MERGE_AFTER:
         log.info("running merge_era5_barter.py")

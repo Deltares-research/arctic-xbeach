@@ -133,16 +133,37 @@ def era5_forcing(path, start_time_utc, end_time_utc=None, eta=0.0, water_profile
                    ERA5 SST at the nearest ocean point (the freezing point under sea ice) over
                    the whole column, or linearly to T_bottom at the domain bottom if given
     albedo_land:   None uses ERA5 forecast albedo `fal` (snow included); else a constant
+
+    Box-only variables (fal, siconc_ocean) can be missing for whole years while the box
+    download is incomplete. Their gaps are filled with the day-of-year climatology of the years
+    that are present (fal with 0.18 snow-free / 0.8 snow by season if none are), never bridged
+    by interpolation across years; f.filled reports the filled fraction per variable.
     """
     import xarray as xr
 
     t0 = np.datetime64(start_time_utc, "s")
     with xr.open_dataset(path) as ds:
+        clim = {}
+        for v in ("fal", "siconc_ocean"):
+            if v in ds and ds[v].dims == ("time",):
+                c = ds[v].groupby("time.dayofyear").mean().reindex(dayofyear=np.arange(1, 367))
+                clim[v] = c.values.astype(float)
         if end_time_utc is not None:
             ds = ds.sel(time=slice(t0 - np.timedelta64(2, "h"), np.datetime64(end_time_utc, "s") + np.timedelta64(2, "h")))
         stamp = (ds["time"].values.astype("datetime64[s]") - t0).astype(float)
         data = {v: ds[v].values.astype(float) for v in ds.data_vars if ds[v].dims == ("time",)}
     t_of = {v: stamp - 1800.0 if v in ERA5_ACCUMULATED else stamp for v in data}
+    doy = ((t0 + stamp.astype("timedelta64[s]")) - (t0 + stamp.astype("timedelta64[s]")).astype("datetime64[Y]")
+           ).astype("timedelta64[D]").astype(int)  # 0-based day of year
+    filled = {}
+    for v, c in clim.items():
+        if v not in data:
+            continue
+        if not np.isfinite(c).any() and v == "fal":
+            c = np.where((np.arange(366) >= 159) & (np.arange(366) <= 274), 0.18, 0.8)
+        gap = ~np.isfinite(data[v])
+        data[v] = np.where(gap, c[doy], data[v])
+        filled[v] = float(gap.mean()) if len(gap) else 0.0
     Tf_sea = float(freezing_point(S_sea))
 
     def at(v, t, keep_gaps=False):
@@ -177,5 +198,6 @@ def era5_forcing(path, start_time_utc, end_time_utc=None, eta=0.0, water_profile
                        sw_direct=direct, sw_diffuse=None if direct is None else ghi - direct)
 
     f.start_time_utc = str(t0)
+    f.filled = filled
     f.series = lambda v, t: at(v, t)  # raw access, e.g. f.series("siconc_ocean", t) for storm gating
     return f
