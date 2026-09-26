@@ -42,6 +42,7 @@ import scipy.sparse as sp
 from scipy.sparse.linalg import splu
 
 from . import materials as mat
+from . import radiation as rad
 from .grid import Grid
 
 
@@ -58,7 +59,17 @@ class Settings:
     albedo_ice: float = 0.6
     sw_beta: float = 0.55             # fraction of the shortwave absorbed in the top water cell (near infrared)
     kd: float = 0.7                   # attenuation of the penetrating shortwave [m-1] (Stefansson Sound, calm)
-    sw_vertical_factor: float = 0.5   # shortwave on a vertical face relative to a horizontal one
+    sw_vertical_factor: float = 0.5   # without radiation geometry: shortwave on a vertical face relative to a horizontal one
+    # --- radiation geometry (on when latitude, longitude, start_time_utc and bearing_seaward are all set)
+    latitude: float | None = None     # site latitude [deg N]
+    longitude: float | None = None    # site longitude [deg E]
+    start_time_utc: str | None = None  # UTC date-time of model time 0, e.g. "2016-01-01T00:00"
+    bearing_seaward: float | None = None  # compass bearing the seaward-facing faces look towards [deg from N, cw];
+                                          # the sea is at low x. Barter: about 2 (v1.0 grid_orientation 88.14 ccw from E)
+    svf_directions: int = 36          # directions per face for the sky-view factor
+    face_samples: int = 4             # sample points per face for partial shading and sky view
+    sun_substep: float = 1800.0       # sun-position sampling within a time step for the direct beam [s]
+    albedo_terrain: float | None = None  # albedo of the terrain that reflects onto faces; None uses Forcing.albedo_land
     # --- water column and salt
     S_sea: float = 30.0               # default sea salinity [psu], used when the forcing gives no S_ref
     Kx_surf: float = 1.0              # horizontal eddy diffusivity in shallow water [m2 s-1] (Clark et al. 2010)
@@ -131,6 +142,8 @@ class Model2DV:
         self.eroded_sediment = 0.0  # [m3 per m alongshore]
         self.collapse_events = []
         self.last_step = {}
+        self._geometry_cache = {}   # active-mask bytes -> radiation.Geometry (small LRU)
+        self._step_window = (0.0, 0.0)
 
     # ------------------------------------------------------------------ state
     def state(self):
@@ -271,41 +284,108 @@ class Model2DV:
             np.add.at(a_face, i_w, Gc * Tf_s[clamp])
         L = sp.coo_matrix((np.concatenate(vals), (np.concatenate(rows), np.concatenate(cols))), shape=(n, n)).tocsc()
 
-        # faces exposed to the atmosphere: an inactive (air) neighbour or the top of the domain
-        top = np.zeros(g.shape, dtype=bool)
-        top[:-1, :] = act[:-1, :] & ~act[1:, :]
-        top[-1, :] = act[-1, :]
-        side = np.zeros(g.shape)
-        side[:, 1:] += act[:, 1:] & ~act[:, :-1]
-        side[:, :-1] += act[:, :-1] & ~act[:, 1:]
+        # faces exposed to the atmosphere (an inactive neighbour, or the top of the domain), by direction
+        masks = rad.exposed_faces(act)
+        r_z = 0.5 * g.dz[:, None] / kz
+        r_x = 0.5 * g.dx[None, :] / kx
         exposure = SimpleNamespace(
-            A_top=top * g.dx[None, :], r_top=0.5 * g.dz[:, None] / kz,     # area and half-cell resistance
-            A_side=side * g.dz[:, None], r_side=0.5 * g.dx[None, :] / kx,
+            A={rad.UP: masks[rad.UP] * g.dx[None, :], rad.DOWN: masks[rad.DOWN] * g.dx[None, :],
+               rad.SEA: masks[rad.SEA] * g.dz[:, None], rad.LAND: masks[rad.LAND] * g.dz[:, None]},
+            r={rad.UP: r_z, rad.DOWN: r_z, rad.SEA: r_x, rad.LAND: r_x},  # half-cell resistance to the face
             a_face=a_face,                                                 # constant part of clamped-face fluxes
         )
         return idx, L, exposure
 
+    @property
+    def radiation_geometry(self):
+        s = self.s
+        return None not in (s.latitude, s.longitude, s.start_time_utc, s.bearing_seaward)
+
+    def _geometry(self, active):
+        """Face inventory and sky-view factors for this active mask (cached)."""
+        key = np.packbits(active).tobytes()
+        geom = self._geometry_cache.get(key)
+        if geom is None:
+            geom = rad.Geometry(self.grid, active, n_dirs=self.s.svf_directions, n_sub=self.s.face_samples)
+            if len(self._geometry_cache) >= 8:
+                self._geometry_cache.pop(next(iter(self._geometry_cache)))
+            self._geometry_cache[key] = geom
+        return geom
+
+    def _sun(self, t0, dt):
+        """Sun elevation and azimuth at the middle of [t0, t0 + dt] and the sub-sample times
+        used to average the direct beam over the step."""
+        s = self.s
+        start = np.datetime64(s.start_time_utc, "s")
+        n = max(1, int(np.ceil(dt / s.sun_substep)))
+        t_sub = start + ((t0 + (np.arange(n) + 0.5) * dt / n) * 1e3).astype("timedelta64[ms]")
+        el, az = rad.solar_position(t_sub, s.latitude, s.longitude)
+        t_mid = start + (np.array(t0 + 0.5 * dt) * 1e3).astype("timedelta64[ms]")
+        el_mid, _ = rad.solar_position(t_mid, s.latitude, s.longitude)
+        return t_mid, float(el_mid), el, az
+
     def _shortwave(self, p, F):
-        """Absorbed shortwave: per unit area at the top and side faces of soil and ice, and per
-        cell [W per m alongshore] in the water column (two-band Beer-Lambert, with the light
-        reaching the bed absorbed by the bed cell)."""
+        """Absorbed shortwave per unit area on each air-exposed face of soil and ice, the sky-view
+        factor of each face, and the shortwave absorbed per cell in the water column [W per m
+        alongshore] (two-band Beer-Lambert, the light reaching the bed absorbed by the bed cell).
+
+        Without radiation geometry, upward faces get the full shortwave and vertical faces
+        sw_vertical_factor of it; downward faces see no sky. With it, each face gets the direct
+        beam averaged over the step (cast shadows included), the diffuse sky it sees and the
+        light reflected by the terrain it sees (radiation.py)."""
         s, g = self.s, self.grid
         q_vol = np.zeros(g.shape)
-        sw_top = np.zeros(g.shape)
-        sw_side = np.zeros(g.shape)
-        if F.sw_down <= 0.0:
-            return q_vol, sw_top, sw_side
+        sw = {k: np.zeros(g.shape) for k in (rad.UP, rad.DOWN, rad.SEA, rad.LAND)}
         albedo = np.where(p.soil, F.albedo_land, np.where(p.fluid, s.albedo_water, s.albedo_ice))
-        sw_side = np.where(p.fluid, 0.0, F.sw_down * s.sw_vertical_factor * (1.0 - albedo))
+        if self.radiation_geometry:
+            geom = self._geometry(p.active)
+            svf = geom.svf
+            t0, dt = self._step_window
+            t_mid, el_mid, el, az = self._sun(t0, dt)
+            if F.sw_direct is not None and F.sw_diffuse is not None:
+                dir_h, dif_h = max(F.sw_direct, 0.0), max(F.sw_diffuse, 0.0)
+            else:
+                dir_h, dif_h = (float(v) for v in rad.erbs_split(F.sw_down, el_mid, t_mid))
+            ghi = dir_h + dif_h
+            # direct-beam factor averaged over the step, weighted by the clear-sky direct beam
+            fdir = {k: np.zeros(g.shape) for k in sw}
+            wsum = 0.0
+            if dir_h > 0.0:
+                for e, a_ in zip(el, az):
+                    sin_e = np.sin(np.radians(e))
+                    if sin_e <= 0.035:
+                        continue
+                    w = sin_e * 0.75 ** (1.0 / sin_e)
+                    f = geom.direct_factor(rad.sun_vector(e, a_, (s.bearing_seaward + 180.0) % 360.0))
+                    for k in sw:
+                        fdir[k] += w * f[k]
+                    wsum += w
+            if wsum > 0.0:
+                for k in sw:
+                    fdir[k] /= wsum
+            else:
+                dif_h, dir_h = ghi, 0.0  # no usable sun position in the step: treat all as diffuse
+            a_ter = F.albedo_land if s.albedo_terrain is None else s.albedo_terrain
+            incident = {k: dir_h * fdir[k] + dif_h * svf[k] + (1.0 - svf[k]) * a_ter * ghi for k in sw}
+        else:
+            svf = {k: np.ones(g.shape) for k in sw}
+            svf[rad.DOWN] = np.zeros(g.shape)
+            incident = {rad.UP: np.full(g.shape, F.sw_down), rad.DOWN: np.zeros(g.shape),
+                        rad.SEA: np.full(g.shape, s.sw_vertical_factor * F.sw_down),
+                        rad.LAND: np.full(g.shape, s.sw_vertical_factor * F.sw_down)}
+        for k in sw:
+            sw[k] = np.where(p.fluid, 0.0, (1.0 - albedo) * incident[k])
+        # water columns: the light entering the water surface penetrates
         for i in range(g.nx):
             js = np.nonzero(p.active[:, i])[0]
             if len(js) == 0:
                 continue
             jt = js.max()
             if not p.fluid[jt, i]:
-                sw_top[jt, i] = (1.0 - albedo[jt, i]) * F.sw_down
                 continue
-            I0 = (1.0 - albedo[jt, i]) * F.sw_down * g.dx[i]
+            I0 = (1.0 - albedo[jt, i]) * incident[rad.UP][jt, i] * g.dx[i]
+            if I0 <= 0.0:
+                continue
             q_vol[jt, i] += s.sw_beta * I0
             pen = (1.0 - s.sw_beta) * I0
             depth, j = 0.0, jt
@@ -315,7 +395,7 @@ class Model2DV:
                 j -= 1
             if j >= 0 and p.active[j, i]:
                 q_vol[j, i] += pen * np.exp(-s.kd * depth)
-        return q_vol, sw_top, sw_side
+        return q_vol, sw, svf
 
     def _surface_exchange(self, T, faces, F):
         """Linearised surface energy balance of the air-exposed faces of each cell.
@@ -323,17 +403,19 @@ class Model2DV:
         Per unit area the balance is q = a' - b Ts, with Ts the surface temperature. Conduction
         from the surface to the cell centre over the half-cell resistance r gives the flux
         into the cell, Q = A (a' - b T) / (1 + b r). Returns g_ext, a_ext (Q = a_ext - g_ext T)
-        and the updated surface temperatures."""
+        and the updated surface temperatures. Each face entry is [A, r, sw, Ts, svf]."""
         s = self.s
         eps_sigma = s.emissivity * mat.SIGMA
         h_s = s.rho_air * s.cp_air * s.c_h * F.u10 if F.h_air is None else F.h_air
         g_ext = np.zeros_like(T)
         a_ext = np.zeros_like(T)
         Ts_new = []
-        for A, r, sw, Ts in faces:
+        for A, r, sw, Ts, svf in faces:
+            # only the sky-visible fraction exchanges longwave; the terrain seen is taken to be at
+            # the face's own temperature, so the rest carries no net longwave flux
             TK3 = (Ts + mat.T0K) ** 3
-            b = h_s + 4.0 * eps_sigma * TK3
-            a = sw + s.emissivity * F.lw_down + h_s * F.T_air + eps_sigma * TK3 * (3.0 * Ts - mat.T0K)
+            b = h_s + 4.0 * eps_sigma * TK3 * svf
+            a = sw + svf * (s.emissivity * F.lw_down + eps_sigma * TK3 * (3.0 * Ts - mat.T0K)) + h_s * F.T_air
             g_ext += A * b / (1.0 + b * r)
             a_ext += A * a / (1.0 + b * r)
             Ts_new.append((a * r + T) / (1.0 + b * r))
@@ -362,6 +444,7 @@ class Model2DV:
 
     def _advance(self, dt, forcing_fn, t0, depth):
         F = forcing_fn(t0 + 0.5 * dt, self.grid.zc)
+        self._step_window = (t0, dt)
         if self._solve(dt, F):
             return
         if depth >= self.s.max_halvings:
@@ -405,7 +488,7 @@ class Model2DV:
         c = mat.closure(self.phi_s[act], self.phi_h2o[act], self.salt[act])
 
         # fixed sources and linear exchanges: flux into a cell = a - g * T
-        q_vol, sw_top, sw_side = self._shortwave(p, F)
+        q_vol, sw, svf = self._shortwave(p, F)
         a_const = q_vol[act] + ex.a_face
         q_geo = np.zeros(g.shape)
         q_geo[0, :] = s.q_geo * g.dx
@@ -416,8 +499,8 @@ class Model2DV:
         a_const += g_const * T_ref
 
         T, D, _ = mat.temperature_from_enthalpy(H0, c)
-        faces = [[ex.A_top[act], ex.r_top[act], sw_top[act] + F.q_surface, T.copy()],
-                 [ex.A_side[act], ex.r_side[act], sw_side[act], T.copy()]]
+        faces = [[ex.A[k][act], ex.r[k][act], sw[k][act] + (F.q_surface if k == rad.UP else 0.0), T.copy(),
+                  svf[k][act]] for k in (rad.UP, rad.DOWN, rad.SEA, rad.LAND)]
 
         Hk = H0.copy()
         converged = False
@@ -539,7 +622,7 @@ class Model2DV:
         idx, L, ex = self._assemble(p)
         act = p.active
         big = 1e4  # W m-2 K-1: effectively a fixed temperature
-        g_air = (ex.A_top / (1.0 / big + ex.r_top) + ex.A_side / (1.0 / big + ex.r_side)) * ~p.fluid  # water held at T_water
+        g_air = sum(ex.A[k] / (1.0 / big + ex.r[k]) for k in ex.A) * ~p.fluid  # water held at T_water
         g_ext = g_air[act] + (p.fluid * big * g.volume)[act]
         a_ext = (g_air * T_air)[act] + (p.fluid * big * g.volume * T_water)[act] + ex.a_face
         q_geo = np.zeros(g.shape)
