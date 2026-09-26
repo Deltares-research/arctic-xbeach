@@ -57,6 +57,13 @@ def plot_salinity(ax, ds, it, field="S_bulk", vmin=0.0, vmax=40.0, rasterized=Tr
                          rasterized=rasterized)
 
 
+def plot_grid(ax, ds, color="k", lw=0.25, alpha=0.35):
+    """Overlay the cell edges (all cells, including inactive air cells)."""
+    xe, ze = ds.x_edge.values, ds.z_edge.values
+    ax.vlines(xe, ze[0], ze[-1], colors=color, linewidths=lw, alpha=alpha, zorder=3)
+    ax.hlines(ze, xe[0], xe[-1], colors=color, linewidths=lw, alpha=alpha, zorder=3)
+
+
 def save(fig, path, dpi=300):
     fig.savefig(path, dpi=dpi)
     plt.close(fig)

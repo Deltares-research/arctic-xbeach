@@ -66,13 +66,65 @@ def remove_thawed_face_cells(model):
     return int(remove.sum())
 
 
+def mix_meltwater(model, fluid_before):
+    """Hand on the heat of ice cells that melted during the last step, then stir the melt water
+    into the water it touches.
+
+    1. A clamped face delivers h (T_w - T_f) for the whole step, so an ice cell that melts
+       part-way through the step ends up warmer than its melting point. That surplus belongs
+       to the ice behind it (a sub-step front tracking would have moved the face on), so it is
+       passed to the adjacent cells that are still solid. Without this the surplus returned to
+       the water and pure-ice faces retreated ~8% too slowly.
+    2. The melt water, now at its melting point, is averaged (heat and salt, by volume) with its
+       fluid neighbours: mixing over one cell takes seconds in turbulent water, and water left at
+       the melting point would leave the next face unclamped for a step.
+    Returns the number of melted cells."""
+    g = model.grid
+    p = model.state()
+    new = p.fluid & ~fluid_before
+    if not np.any(new):
+        return 0
+    V = g.volume
+    solid = p.active & ~p.fluid
+    for j, i in zip(*np.nonzero(new)):
+        nbs = [(jj, ii) for jj, ii in ((j - 1, i), (j + 1, i), (j, i - 1), (j, i + 1))
+               if 0 <= jj < g.nz and 0 <= ii < g.nx]
+        behind = [t for t in nbs if solid[t]]
+        surplus = V[j, i] * (model.H[j, i] - p.H_liq[j, i])
+        if behind and surplus > 0.0:
+            w = np.array([V[t] for t in behind])
+            for t, wt in zip(behind, w / w.sum()):
+                model.H[t] += surplus * wt / V[t]
+            model.H[j, i] = p.H_liq[j, i]
+        mix = [(j, i)] + [t for t in nbs if fluid_before[t]]
+        if len(mix) == 1:
+            continue
+        vm = np.array([V[t] for t in mix])
+        for arr in (model.H, model.salt):
+            mean = np.sum(vm * np.array([arr[t] for t in mix])) / vm.sum()
+            for t in mix:
+                arr[t] = mean
+    return int(new.sum())
+
+
+def solid_mask(model):
+    """Cells that can form an overhang: soil, plus ice if Settings.collapse_ice is on. Ice is
+    opt-in because floating sea ice over water would otherwise count as one long overhang."""
+    solid = model.phi_s >= model.s.open_threshold
+    if model.s.collapse_ice:
+        p = model.state()
+        solid |= p.open & ~p.fluid
+    return solid
+
+
 def undercut_columns(model):
-    """Columns with an open gap (water, ice or air) under soil, and the extent of that gap.
+    """Columns with an open gap (water or air; ice too unless it is itself solid) under a solid
+    overhang, and the extent of that gap.
 
     Returns a list of (i, j_gap_bottom, j_gap_top) and the summed width of those columns,
     i.e. the niche depth."""
     s, g = model.s, model.grid
-    soil = model.phi_s >= s.open_threshold
+    soil = solid_mask(model)
     found = []
     for i in range(g.nx):
         js = np.nonzero(soil[:, i])[0]
@@ -98,12 +150,12 @@ def collapse_overhang(model):
     if depth < s.d_crit or not cols:
         return False
 
-    V = g.volume
+    solid = solid_mask(model)
     e_before = model.total_energy()
     salt_before = model.total_salt()
     for i, jb, jt in cols:
         n = jt - jb + 1
-        j_top = np.nonzero(model.phi_s[:, i] >= s.open_threshold)[0].max()
+        j_top = np.nonzero(solid[:, i])[0].max()
         for arr in (model.phi_s, model.phi_h2o, model.salt, model.H):
             arr[jb:j_top + 1 - n, i] = arr[jt + 1:j_top + 1, i]
             arr[j_top + 1 - n:j_top + 1, i] = 0.0  # the space vacated at the top becomes air

@@ -1,0 +1,11 @@
+2DV: 60 s wall for one year (8784 steps of 1 h); energy budget error 1.16e-03 J m-2
+v1.0: 179 s in the thermal update (294 s in total, dt = 120 s)
+max thaw depth (bottom of the thawed layer): v1.0 1.16 m, 2DV 0.94 m, v1.0 with the Barter-config latent heat 0.00 m
+v1.0 scheme re-implemented as coded: max |T - v1.0 output| = 0.032 K
+v1.0 scheme in conservative flux form: max thaw depth 0.90 m; max |T - 2DV| = 4.99 K, mean -0.001 K
+T at 0.1 m: mean difference 2DV - v1.0 -0.23 K, RMS 0.40 K, max |diff| 4.46 K
+T at 0.5 m: mean difference 2DV - v1.0 -0.65 K, RMS 1.21 K, max |diff| 5.45 K
+T at 1 m: mean difference 2DV - v1.0 -0.75 K, RMS 1.83 K, max |diff| 10.91 K
+T at 2 m: mean difference 2DV - v1.0 -0.55 K, RMS 1.20 K, max |diff| 5.53 K
+T at 5 m: mean difference 2DV - v1.0 -0.17 K, RMS 0.35 K, max |diff| 1.30 K
+v1.0 column energy change minus boundary input after one year: +136.0 MJ m-2 (2DV: +1.2e-09 MJ m-2)

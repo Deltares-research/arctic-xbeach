@@ -361,6 +361,29 @@ Verification (all in `tests/test_thermal2dv.py`; figure in `examples/2dv/run_ana
 Sea ice grown from S = 30 water is 18% thinner than a fresh-ice Neumann solution with
 ΔT = T_f(S) − T_s. That is expected: brine keeps part of the ice liquid and lowers its conductivity.
 
+### 8.2 As implemented: melting faces and the comparison with v1.0 (September 2026)
+
+**Surplus heat at melting faces.** A clamped face delivers h (T_w − T_f) for the whole step. An
+ice cell that melts part-way through the step therefore ends up above its melting point.
+- That surplus now goes to the solid cells behind the new face, and the meltwater is then mixed
+  into the adjacent water (`erosion.mix_meltwater`, called every step). Before this, the surplus
+  returned to the water.
+- Effect on pure-ice faces: the retreat error drops from −9% to −2% (flume demo), and the
+  free-block test from −3% to +1%.
+- Eroded soil cells get the same treatment in `remove_thawed_face_cells`.
+- `Settings.collapse_ice` lets ice overhangs fail as well. It is off by default, so floating sea
+  ice is never taken for an overhang.
+
+**Phase 0 comparison with v1.0** (`examples/2dv/compare_1d/`):
+- Setup: a flat, dry Barter column in 2016 with matched properties and forcing. The 2DV model
+  takes v1.0's surface formulation through `Forcing.q_surface` and `Forcing.h_air`.
+- The two differ only through conservation. v1.0's nodal k ∂²T/∂z² gains 136 MJ m⁻² in the year,
+  and it thaws 0.2 m deeper and refreezes 18 days later.
+- A replica of v1.0's scheme reproduces v1.0 to 0.03 K. The same replica in flux form reproduces
+  the 2DV model.
+- For the v1.0 revision, the fix is a one-line change to face conductivities in `thermal_update`.
+  The latent-heat units in the case-study configs need checking as well (see the examples README).
+
 ---
 
 ## 9. Key risks

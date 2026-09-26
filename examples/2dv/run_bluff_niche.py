@@ -119,6 +119,7 @@ def main():
             ax.set_visible(False)
             continue
         pl.plot_phase(ax, ds, its[k])
+        pl.plot_grid(ax, ds, lw=0.2, alpha=0.3)
         ax.axhline(ETA_STORM if t_days[its[k]] < STORM_DAYS else ETA_CALM, color="w", lw=0.8, ls=":")
         pl.panel_label(ax, f"({chr(97 + k)}) t = {t_days[its[k]]:.2f} d")
         ax.set_xlim(12, 32)

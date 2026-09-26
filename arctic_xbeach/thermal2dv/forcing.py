@@ -23,6 +23,9 @@ class Forcing:
     T_ref: np.ndarray      # ocean reference temperature per grid row [degC] (sponge + flushing target)
     albedo_land: float = 0.18
     S_ref: np.ndarray | None = None  # ocean reference salinity per grid row [psu]; None uses Settings.S_sea
+    q_surface: float = 0.0           # prescribed flux into upward-facing air-exposed faces [W m-2], e.g. reanalysis
+                                     # net SW + net LW + latent when reproducing v1.0 (then set emissivity = 0)
+    h_air: float | None = None       # air-side exchange coefficient [W m-2 K-1]; None uses the bulk rho cp C_h U
 
 
 def constant_forcing(T_air=0.0, sw_down=0.0, lw_down=None, u10=0.0, eta=0.0, T_water=0.0, albedo_land=0.18,

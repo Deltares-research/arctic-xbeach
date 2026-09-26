@@ -24,6 +24,7 @@ from pathlib import Path
 
 import matplotlib.pyplot as plt
 import numpy as np
+import xarray as xr
 
 REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO))
@@ -49,6 +50,7 @@ T_LAND_MEAN = -9.0                  # mean-annual ground surface temperature for
 T_SEABED_MEAN = -1.5                # [degC]
 DT = 3 * 3600.0                     # time step [s]
 N_DAYS = 365
+PLOT_ONLY = False                   # redraw the figures from the saved NetCDF without rerunning
 SNAPSHOT_DOYS = [74, 166, 201, 228, 258, 319]   # 15 Mar, 15 Jun, 20 Jul, 16 Aug (surge peak), 15 Sep, 15 Nov
 PROBE_TUNDRA_OFFSET = 60.0          # tundra "borehole" this far landward of the crest [m]
 PROBE_DEPTHS = [0.1, 0.5, 1.0, 2.0, 5.0]         # [m below the ground surface]
@@ -100,6 +102,14 @@ def main():
     model, xp, zp, x_shore = build_model()
     g = model.grid
     x_crest = float(xp[np.argmax(zp >= zp.max() - 0.01)])
+    nc = OUT_DIR / "barter_transect.nc"
+    if PLOT_ONLY and nc.exists():
+        ds = xr.load_dataset(nc)
+        t = (ds.probe_time.values - ds.probe_time.values[0]) / np.timedelta64(1, "D")
+        series = {k[len("probe_"):]: ds[k].values for k in ds.data_vars if k.startswith("probe_")}
+        series["t"] = t
+        plot(ds, series, x_shore, x_crest, g)
+        return
     forcing = synthetic_arctic_forcing()
     print(f"grid {g.nx} x {g.nz} = {g.nx * g.nz} cells, {int(model.state().active.sum())} active; "
           f"shoreline x = {x_shore:.0f} m, crest x = {x_crest:.0f} m")
@@ -192,6 +202,8 @@ def plot(ds, series, x_shore, x_crest, g):
         m = pl.plot_temperature(axes[r, 0], ds, it, vlim=10.0)
         pl.plot_phase(axes[r, 1], ds, it)
         for c in range(2):
+            pl.plot_grid(axes[r, c], ds, lw=0.2, alpha=0.3)
+        for c in range(2):
             pl.panel_label(axes[r, c], f"({chr(97 + 2 * r + c)}) {labels[r]}")
             axes[r, c].set_xlim(x_shore - 120, x_crest + 60)
             axes[r, c].set_ylim(-7, 14.5)
@@ -206,6 +218,7 @@ def plot(ds, series, x_shore, x_crest, g):
     it = its[3]
     fig, ax = plt.subplots(figsize=(13, 4), constrained_layout=True)
     m = pl.plot_temperature(ax, ds, it, vlim=10.0)
+    pl.plot_grid(ax, ds, lw=0.2, alpha=0.3)
     ax.axvspan(g.xe[0], g.xe[5], color="k", alpha=0.08, lw=0)
     ax.text(g.xe[0] + 5, -27, "sponge", fontsize=10)
     ax.set_xlim(g.xe[0], g.xe[-1])

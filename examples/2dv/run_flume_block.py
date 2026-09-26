@@ -1,8 +1,8 @@
-"""Demo 1: a frozen block at the end of a wave flume, standing in for a bluff.
+"""Demo 1: an ice block at the end of a wave flume, standing in for a bluff.
 
 A laboratory-scale analogue of thermal abrasion, after the cold-room flume experiments with
-frozen sediment blocks (Costard et al. 2003; Dupeyrat et al. 2011). A block of ice-rich frozen
-silt stands against the landward wall of a flume. Warm fresh water fills the flume to below the
+frozen blocks (Costard et al. 2003; Dupeyrat et al. 2011). A block of pure ice (by default; set
+PHI_S_BLOCK > 0 for ice-rich frozen sediment) stands against the landward wall of a flume. Warm fresh water fills the flume to below the
 block top, is kept at T_WATER by recirculation (a sponge at the wave-maker end plus flushing), and
 is stirred by the waves. There is no hydrodynamics: the waves act only through the well-mixed water
 and the face heat transfer coefficient h.
@@ -14,9 +14,9 @@ face retreats at the quasi-steady rate
 
     v = h (T_w - T_f) / (L_v + C_f (T_f - T_0))
 
-(no conduction into the cold interior, i.e. the idealised thermal-abrasion rate). With
-PHI_S_BLOCK = 0 the block is pure ice at 0 degC, there is no matrix to fail, and every submerged
-face retreats at h (T_w - T_f) / L_v.
+(no conduction into the cold interior, i.e. the idealised thermal-abrasion rate). For pure ice
+C_f and L_v are those of ice (1.9 MJ m-3 K-1, 334 MJ m-3); for frozen sediment they are the
+mixture values. Ice overhangs fail by the same niche rule (Settings.collapse_ice).
 
 Outputs (in output/flume_block/): flume_block.nc, flume_block_snapshots.png, flume_block_retreat.png.
 """
@@ -38,19 +38,19 @@ from arctic_xbeach.thermal2dv import plotting as pl  # noqa: E402
 OUT_DIR = REPO / "examples" / "2dv" / "output" / "flume_block"
 FLUME_LENGTH = 8.0        # [m]; the wave maker is at x = 0, the block against the wall at x = FLUME_LENGTH
 FLUME_HEIGHT = 1.3        # model domain height above the flume floor [m]
-DX = 0.025                # grid spacing in x and z [m]
+DX = 0.05                 # grid spacing in x and z [m]
 BLOCK_LENGTH = 2.0        # [m]
 BLOCK_HEIGHT = 1.0        # [m]
 WATER_DEPTH = 0.4         # still water depth [m]
-PHI_S_BLOCK = 0.35        # mineral fraction of the block, rest ice (0.0 = pure ice block)
-T_BLOCK = -5.0            # initial block temperature [degC] (0 is used for a pure ice block)
+PHI_S_BLOCK = 0.0         # mineral fraction of the block, rest ice (0 = pure ice; 0.35 = ice-rich silt)
+T_BLOCK = -5.0            # initial block temperature [degC]
 T_WATER = 5.0             # flume water temperature, held by recirculation [degC]
 T_AIR = 5.0               # cold-room air temperature [degC]
 U_AIR = 1.0               # air speed over the flume [m s-1] (bulk sensible heat only, no radiation)
 H_WATER = 500.0           # water -> block heat transfer coefficient [W m-2 K-1]; waves raise it
 D_CRIT = 0.3              # niche depth at which the overhang fails [m] (lab-scale cantilever)
 DT = 600.0                # time step [s]
-T_END = 36 * 3600.0       # run length [s]
+T_END = 48 * 3600.0       # run length [s]
 SNAP_EVERY = 1800.0       # snapshot interval [s]
 
 
@@ -70,7 +70,7 @@ def main():
     grid = Grid(np.arange(0.0, FLUME_LENGTH + DX / 2, DX), np.arange(0.0, FLUME_HEIGHT + DX / 2, DX))
     settings = Settings(h_water=H_WATER, q_geo=0.0, emissivity=0.0, S_sea=0.0, n_sponge=8, tau_sponge=600.0,
                         tau_flush=3600.0, Kx_surf=1.0, Kz_surf=1e-2, d_crit=D_CRIT,
-                        erosion=PHI_S_BLOCK > 0, collapse=PHI_S_BLOCK > 0)
+                        erosion=True, collapse=True, collapse_ice=True)
     model = Model2DV(grid, settings)
 
     X, Z = grid.meshgrid()
@@ -80,7 +80,7 @@ def main():
     model.phi_s[block] = PHI_S_BLOCK
     model.phi_h2o[block] = 1.0 - PHI_S_BLOCK
     model.phi_h2o[water] = 1.0
-    T0 = T_BLOCK if PHI_S_BLOCK > 0 else 0.0
+    T0 = T_BLOCK
     model.set_temperature(np.where(block, T0, T_WATER), frozen_at_tf=True)
 
     forcing = constant_forcing(T_air=T_AIR, u10=U_AIR, lw_down=None, eta=WATER_DEPTH, T_water=T_WATER)
@@ -123,6 +123,7 @@ def main():
         m = pl.plot_temperature(axes[1, k], ds, it, vlim=6.0)
         for r in range(2):
             ax = axes[r, k]
+            pl.plot_grid(ax, ds)
             ax.axhline(WATER_DEPTH, color="k", lw=0.6, ls=":")
             ax.set_xlim(x_face - 1.2, FLUME_LENGTH)
             ax.set_ylim(0, FLUME_HEIGHT)

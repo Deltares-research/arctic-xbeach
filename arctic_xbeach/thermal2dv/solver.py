@@ -83,6 +83,8 @@ class Settings:
     erosion: bool = True              # remove thawed, ice-rich soil cells that touch water
     collapse: bool = True             # drop overhangs once the niche is deeper than d_crit
     d_crit: float = 1.5               # critical niche depth for block failure [m]
+    collapse_ice: bool = False        # let ice overhangs fail too (ice bluffs, lab blocks); off by default
+                                      # so that floating sea ice is never taken for an overhang
     # --- numerics
     tol_H: float = 10.0               # convergence tolerance on the enthalpy update [J m-3]
     max_iter: int = 40
@@ -324,7 +326,7 @@ class Model2DV:
         and the updated surface temperatures."""
         s = self.s
         eps_sigma = s.emissivity * mat.SIGMA
-        h_s = s.rho_air * s.cp_air * s.c_h * F.u10
+        h_s = s.rho_air * s.cp_air * s.c_h * F.u10 if F.h_air is None else F.h_air
         g_ext = np.zeros_like(T)
         a_ext = np.zeros_like(T)
         Ts_new = []
@@ -339,13 +341,15 @@ class Model2DV:
 
     # ------------------------------------------------------------ time step
     def step(self, dt, forcing_fn):
-        """Advance by dt [s]: water level, implicit heat step (halved if needed), salt
-        transport, brine drainage, then erosion."""
-        from .erosion import collapse_overhang, remove_thawed_face_cells
+        """Advance by dt [s]: water level, implicit heat step (halved if needed), meltwater
+        mixing, salt transport, brine drainage, then erosion."""
+        from .erosion import collapse_overhang, mix_meltwater, remove_thawed_face_cells
 
         F = forcing_fn(self.time + 0.5 * dt, self.grid.zc)
         self.update_wet_dry(F.eta, F.T_ref, F.S_ref)
+        fluid_before = self.state().fluid
         self._advance(dt, forcing_fn, self.time, 0)
+        mix_meltwater(self, fluid_before)
         if self.s.salt_transport:
             self._solve_salt(dt, F)
         if self.s.brine_drainage:
@@ -412,7 +416,7 @@ class Model2DV:
         a_const += g_const * T_ref
 
         T, D, _ = mat.temperature_from_enthalpy(H0, c)
-        faces = [[ex.A_top[act], ex.r_top[act], sw_top[act], T.copy()],
+        faces = [[ex.A_top[act], ex.r_top[act], sw_top[act] + F.q_surface, T.copy()],
                  [ex.A_side[act], ex.r_side[act], sw_side[act], T.copy()]]
 
         Hk = H0.copy()

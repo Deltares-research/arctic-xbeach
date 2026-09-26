@@ -61,7 +61,7 @@ to `examples/2dv/output/<case>/` (`*.nc` is git-ignored; the PNGs are committed)
 |---|---|---|
 | Conduction | erfc solution, surface step, 10 days | max error 0.006 K |
 | Stefan thaw | two-phase Neumann front, saturated silt, 30 days | +0.5% |
-| Ice block | faces retreat at h ΔT / L_v | melted area within 4% at 12 h |
+| Ice block | faces retreat at h ΔT / L_v | melted area within 1.3% at 12 h |
 | Cold ice-rich face | −8 °C, 65% ice under 5 °C water | 0.85 m/day against 0.93 idealised; the remaining 8% is meltwater cooling the water at the face |
 | Energy budget | domain change against boundary + logged exchanges | < 1e-6 relative |
 | Undercut detection | niche geometry | exact |
@@ -72,28 +72,27 @@ to `examples/2dv/output/<case>/` (`*.nc` is git-ignored; the PNGs are committed)
 | Saline freezing | liquid fraction of saline pore water during freezing, S = 5, 15, 35 | on the liquidus to 1e-15 |
 | Brine rejection | sea water freezing for 10 days | brine on the liquidus; consolidated ice 8–26 psu; water below enriched to 32.1 psu at its own freezing point; salt budget 1e-10, energy 4e-11 |
 
-## Demo 1: frozen block in a wave flume (`run_flume_block.py`)
+## Demo 1: ice block in a wave flume (`run_flume_block.py`)
 
 This is a laboratory-scale analogue of a bluff, after the cold-room flume experiments with frozen
-sediment blocks (Costard et al. 2003; Dupeyrat et al. 2011).
+blocks (Costard et al. 2003; Dupeyrat et al. 2011).
 
-- **Setup.** A 2 m × 1 m block of ice-rich frozen silt (65% ice, −5 °C) stands against the
-  landward wall of an 8 m flume.
+- **Setup.** A 2 m × 1 m block of pure ice at −5 °C stands against the landward wall of an 8 m
+  flume, on 5 cm cells (the grid is drawn on the figures).
 - **Water.** Fresh water 0.4 m deep is held at 5 °C by recirculation: a sponge at the wave-maker
   end plus flushing. The waves are not resolved; they act only through the well-mixed water and
   the face heat transfer coefficient h = 500 W m⁻² K⁻¹.
 - **Niche.** The submerged face melts and cuts a niche at the waterline. Before the first
-  failure it retreats at 0.92 m/day against the quasi-steady h ΔT / (L_v + C_f ΔT₀) = 0.95 m/day
-  (−4%).
-- **Failure.** The frozen part above the water becomes an overhang and drops into the niche once
-  the niche is 0.3 m deep (at 8, 15, 24 and 32 h).
-- **Armouring.** Each fallen block must melt before the face is exposed again, so after 36 h the
-  crest has retreated 0.61 m, about half the undisturbed rate.
-- **Budget.** Energy closes to 9e-9.
+  failure it retreats at 0.61 m/day against the quasi-steady h ΔT / (L_v + C_i ΔT₀) = 0.63 m/day
+  (−2.4%).
+- **Failure.** The ice above the water becomes an overhang and drops into the niche once the
+  niche is 0.3 m deep (`Settings.collapse_ice`, at 12, 21, 33 and 46 h). Each fallen block has to
+  melt before the face is exposed again, so the crest retreats 0.68 m in 48 h.
+- **Budget.** Energy closes to 1e-9.
 
-Setting `PHI_S_BLOCK = 0` gives a pure ice block at 0 °C with the same geometry: it melts without
-failures at h ΔT / L_v. The unconfined pure-ice case (the three melting faces of a free block) is
-kept as a verification test and as panel (c) of the analytical suite.
+Setting `PHI_S_BLOCK = 0.35` gives an ice-rich silt block instead (thaw, then removal of the
+thawed matrix). The free ice-block case, a block melting on three faces, is kept as a
+verification test and as panel (c) of the analytical suite.
 Figures: `flume_block_snapshots.png` (phase and temperature) and `flume_block_retreat.png`.
 
 ## Demo 2: bluff niche and block failure (`run_bluff_niche.py`)
@@ -146,6 +145,48 @@ Figures: `barter_snapshots.png` (temperature and phase at six dates), `barter_fu
 (whole domain at the surge peak) and `barter_timeseries.png` (forcing, tundra ground temperature,
 thaw depth, nearshore water temperature and ice thickness) and `barter_salinity.png` (bulk
 salinity in March and at the surge, and salinity of the water and sea ice through the year).
+
+## Comparison with the v1.0 1D model (`compare_1d/`)
+
+The same flat, dry silt column at Barter Island (φ_s = 0.6, φ_H₂O = 0.4, 10 m deep) is run for
+2016 by both models. Forcing, soil properties, initial profile and geothermal gradient are the
+same, and so is v1.0's surface formulation:
+- sensible heat with h = 16.12 U^0.8;
+- ERA5 net SW + net LW + latent flux, prescribed hourly.
+
+The 2DV model takes these through `Forcing.q_surface` and `Forcing.h_air`, so only the numerics
+differ.
+
+```bash
+python examples/2dv/compare_1d/run_v10_column.py                  # v1.0, ~5 min (needs the full ERA5 file)
+python examples/2dv/compare_1d/run_v10_column_barter_latent.py    # v1.0 with the Barter-config latent heat
+python examples/2dv/compare_1d/run_compare_1d.py                  # 2DV column, v1.0 scheme replicas, figure
+```
+
+| | v1.0 | 2DV | v1.0 scheme, conservative flux form |
+|---|---|---|---|
+| Maximum thaw depth | 1.16 m | 0.94 m | 0.90 m |
+| Refreeze of the thawed layer | day 330 | day 312 | day 311 |
+| Energy budget error after one year | +136 MJ m⁻² | 1e-9 MJ m⁻² | — |
+| Wall time (thermal part) | 179 s (dt = 120 s) | 60 s (dt = 1 h) | — |
+
+- **Why they differ.** v1.0 updates each node with its own k times the discrete Laplacian,
+  k ∂²T/∂z², instead of the flux form ∂/∂z(k ∂T/∂z).
+  - Where k jumps (frozen 2.6, thawed 1.5 W m⁻¹ K⁻¹), heat that leaves one node is not the heat
+    that enters the next.
+  - The column gains a spurious 136 MJ m⁻² in 2016, about 4 W m⁻² on average and as much as
+    the latent heat of the whole thawed layer.
+  - A re-implementation of v1.0's scheme reproduces its output to 0.03 K. Changing only the
+    conduction term to the flux form gives the 2DV result (mean difference 0.001 K). The
+    implicit time step and the mushy-zone treatment do not matter here; conservation does.
+- **Barter-config latent heat.** The Barter Island case-study config sets `L_water_ice:
+  334000000` with `rho_soil: None`. v1.0 stores enthalpy per unit mass and adds
+  `L_water_ice * nb` to it, so the effective latent heat is ρ_soil · L · nb ≈ 2215 × 3.34e8 ×
+  0.263 ≈ 1.9e11 J m⁻³, about 2200 times ρ_w L nb. Run with that setting, the column never thaws
+  in 2016: the surface sits at 0 °C all summer (green line).
+
+Figure: `output/compare_1d/compare_1d.png`. It shows ground temperature at five depths, thaw
+depth, the 2DV − v1.0 temperature difference and the energy budget error.
 
 ## Limitations of this first version
 

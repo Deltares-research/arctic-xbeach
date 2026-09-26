@@ -1,6 +1,6 @@
 (a) conduction: max |T - erfc| = 0.006 K
 (b) Stefan thaw: front error at 30 d = +0.5%
-(c) ice block: melted area at 12 h, model/analytic = 0.968
+(c) ice block: melted area at 12 h, model/analytic = 1.013
 (d) cold face: 0.853 m/day against 0.929 idealised (-8.2%; the meltwater cools the water at the face)
 (e) fresh ice at 10 d: -1.5% vs Neumann; sea ice -18.4% vs Neumann with dT = Tf(S) - Ts
 (f) salt diffusion, open water: max error 0.81% of the step
