@@ -177,11 +177,18 @@ path at Barter (70.13° N, 143.66° W). The bluff faces north (bearing 1.86°, f
 `grid_orientation` of 88.14° counter-clockwise from east), and on this grid it is a ~45°
 staircase, not a vertical wall.
 
-| Jun–Aug mean absorbed SW | legacy (0.5 × SW on vertical faces) | geometry |
-|---|---|---|
-| Bluff slope (per m² of slope) | 185 W m⁻² | 147 W m⁻² (−21%) |
-| Beach below the bluff | 154 W m⁻² | 144 W m⁻² (−6%, shaded) |
-| Tundra | 174 W m⁻² | 174 W m⁻² |
+`FORCING` selects ERA5 2016 at Barter (`era5/data/era5_barter_point.nc`: direct and diffuse
+shortwave, longwave, air temperature, wind, albedo and SST, with still water at 0 m and no surge)
+or the synthetic year, whose shortwave follows the real sun path.
+
+| Jun–Aug mean absorbed SW | ERA5 2016, legacy | ERA5 2016, geometry | synthetic, legacy | synthetic, geometry |
+|---|---|---|---|---|
+| Bluff slope (per m² of slope) | 161 W m⁻² | 104 W m⁻² (−35%) | 185 W m⁻² | 147 W m⁻² (−21%) |
+| Beach below the bluff | 139 W m⁻² | 128 W m⁻² (−8%, shaded) | 154 W m⁻² | 144 W m⁻² (−6%) |
+| Tundra | 152 W m⁻² | 152 W m⁻² | 174 W m⁻² | 174 W m⁻² |
+
+With real ERA5 the bluff loses more than with the synthetic sky (−35% against −21%). With
+ERA5 2016, thaw into the face at 7 m height starts about 5 days later with geometry.
 
 At the end of August, the surface cells of the face and the beach toe end up as much as ~1.5 K
 colder with geometry. The erosion of the year barely changes (3.11 vs 3.15 m³ m⁻¹; two block
@@ -190,7 +197,7 @@ August surge, not by thermal denudation. Clear-sky direct beam on a vertical nor
 is 0.25 (June) to 0.00 (September) of flat ground, so a fixed 0.5 overheats north-facing
 bluffs, more so as the season goes on.
 
-Figure: `output/radiation_demo/radiation_demo.png`.
+Figures: `output/radiation_demo/radiation_demo_era5.png`, `radiation_demo_synthetic.png`.
 
 ## Comparison with the v1.0 1D model (`compare_1d/`)
 
@@ -316,7 +323,7 @@ Figures: `output/coupled/compare_barter_2dv_matched.png`, `compare_barter_2dv_te
   so a tide rising above an ice lid floods the air cells above it.
 - **Block failure is a geometric rule** (niche depth > d_crit), not a stability calculation.
 - **Forcing.** The standalone demos use synthetic forcing. The ERA5 adapter (`era5_forcing`) is
-  ready, and the ERA5 point download for Barter is queued at the CDS. Nothing is calibrated or
-  validated against Barter observations yet.
+  in use (Demo 4 runs on ERA5 2016). The full 1979–2025 point download is still running at the
+  CDS. Nothing is calibrated or validated against Barter observations yet.
 - **Radiation.** The sky is isotropic (no Perez circumsolar term), and the terrain seen by a face
   is taken to be at the face's own temperature for longwave.

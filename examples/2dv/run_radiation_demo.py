@@ -1,7 +1,8 @@
 """Demo 4: radiation geometry on the Barter Island bluff, with and without.
 
 The Barter transect of Demo 3 (same grid, soil and initial state) is run for one year twice
-with the same synthetic forcing, whose shortwave now follows the real sun path at Barter:
+with the same forcing: ERA5 2016 at Barter (direct and diffuse shortwave, longwave, air
+temperature, wind, albedo, SST; still water at 0 m) or the synthetic year with the real sun path:
 
   legacy    upward faces get the full shortwave, bluff faces a fixed 0.5 x SW, every face
             sees the whole sky
@@ -10,8 +11,8 @@ with the same synthetic forcing, whose shortwave now follows the real sun path a
             (radiation.py); the bluff faces north (bearing_seaward 1.86 deg, from the v1.0
             grid_orientation of 88.14 deg counter-clockwise from east)
 
-Outputs (in output/radiation_demo/): radiation_demo.png, radiation_demo_summary.txt,
-radiation_<case>.nc.
+Outputs (in output/radiation_demo/): radiation_demo_<forcing>.png, radiation_demo_<forcing>_summary.txt,
+radiation_<forcing>_<case>.nc.
 """
 
 import sys
@@ -28,14 +29,17 @@ sys.path.insert(0, str(REPO))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from arctic_xbeach.thermal2dv import synthetic_arctic_forcing  # noqa: E402
+from arctic_xbeach.thermal2dv.forcing import era5_forcing  # noqa: E402
 from arctic_xbeach.thermal2dv import plotting as pl  # noqa: E402
 from arctic_xbeach.thermal2dv import radiation as rad  # noqa: E402
 from run_barter_transect import build_model  # noqa: E402
 
 # === CONFIGURATION ===
-OUT_DIR = REPO / "examples" / "2dv" / "output" / "radiation_demo"
+OUT_DIR = REPO / "examples" / "2dv" / "output" / "radiation_demo"  # results are suffixed by FORCING
 LAT, LON = 70.13, -143.66           # Barter Island
-START = "2021-01-01T00:00"          # UTC at t = 0
+FORCING = "era5"                    # "era5" (ERA5 2016 at Barter, era5/data/era5_barter_point.nc) or "synthetic"
+ERA5_POINT = REPO / "examples" / "2dv" / "era5" / "data" / "era5_barter_point.nc"
+START = "2016-01-01T00:00" if FORCING == "era5" else "2021-01-01T00:00"  # UTC at t = 0
 BEARING_SEAWARD = 90.0 - 88.14      # compass bearing the bluff faces [deg]
 DT = 3 * 3600.0                     # time step [s]
 N_DAYS = 365
@@ -53,7 +57,10 @@ def run_case(case):
     if case == "geometry":
         s = model.s
         s.latitude, s.longitude, s.start_time_utc, s.bearing_seaward = LAT, LON, START, BEARING_SEAWARD
-    forcing = synthetic_arctic_forcing(solar_site=(LAT, LON, START))
+    if FORCING == "era5":
+        forcing = era5_forcing(ERA5_POINT, START, eta=0.0, S_sea=model.s.S_sea)
+    else:
+        forcing = synthetic_arctic_forcing(solar_site=(LAT, LON, START))
     x_crest = float(xp[np.argmax(zp >= zp.max() - 0.01)])
     iw = np.nonzero((g.xc > x_crest + WINDOW_X[0]) & (g.xc < x_crest + WINDOW_X[1]))[0]
     jw = np.nonzero((g.zc > WINDOW_Z[0]) & (g.zc < WINDOW_Z[1]))[0]
@@ -96,7 +103,7 @@ def run_case(case):
         coords={"day": np.array(days), "z": g.zc[jw], "x": g.xc[iw] - x_crest, "zg": g.zc, "xg": g.xc - x_crest,
                 "ze": g.ze, "xe": g.xe - x_crest})
     ds.attrs = dict(case=case, wall_s=wall, x_crest=x_crest, failures=len(model.collapse_events))
-    ds.to_netcdf(OUT_DIR / f"radiation_{case}.nc")
+    ds.to_netcdf(OUT_DIR / f"radiation_{FORCING}_{case}.nc")
     return case
 
 
@@ -107,7 +114,7 @@ def main():
         with ProcessPoolExecutor(max_workers=2) as pool:
             for case in pool.map(run_case, cases):
                 print(f"{case} done")
-    ds = {c: xr.load_dataset(OUT_DIR / f"radiation_{c}.nc") for c in cases}
+    ds = {c: xr.load_dataset(OUT_DIR / f"radiation_{FORCING}_{c}.nc") for c in cases}
     summarise(ds)
     plot(ds)
 
@@ -135,7 +142,7 @@ def summarise(ds):
                      f"eroded {d.eroded.values[-1]:.2f} m3/m; block failures {d.attrs['failures']}; wall {d.attrs['wall_s']:.0f} s")
     txt = "\n".join(lines)
     print(txt)
-    (OUT_DIR / "radiation_demo_summary.txt").write_text(txt + "\n", encoding="utf-8")
+    (OUT_DIR / f"radiation_demo_{FORCING}_summary.txt").write_text(txt + "\n", encoding="utf-8")
 
 
 def plot(ds):
@@ -198,8 +205,8 @@ def plot(ds):
     ax.set_ylabel("z (m)")
     ax.text(0.02, 0.95, f"(d) day {DIFF_DOY} (31 Aug)", transform=ax.transAxes, va="top")
     ax.set_facecolor("0.93")
-    fig.savefig(OUT_DIR / "radiation_demo.png", dpi=150)
-    print(f"wrote {OUT_DIR / 'radiation_demo.png'}")
+    fig.savefig(OUT_DIR / f"radiation_demo_{FORCING}.png", dpi=150)
+    print(f"wrote {OUT_DIR / f'radiation_demo_{FORCING}.png'}")
 
 
 if __name__ == "__main__":

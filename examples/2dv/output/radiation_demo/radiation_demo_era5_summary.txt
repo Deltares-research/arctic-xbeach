@@ -1,0 +1,4 @@
+legacy    Jun-Aug mean absorbed SW: bluff slope  161.4 W m-2 (mean slope 45 deg), beach  138.8, tundra  152.2
+          max horizontal thaw into the bluff at z = 7.0 m: 1.00 m; eroded 0.00 m3/m; block failures 0; wall 1455 s
+geometry  Jun-Aug mean absorbed SW: bluff slope  104.5 W m-2 (mean slope 45 deg), beach  128.3, tundra  152.2
+          max horizontal thaw into the bluff at z = 7.0 m: 1.00 m; eroded 0.00 m3/m; block failures 0; wall 1668 s
