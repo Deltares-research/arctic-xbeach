@@ -1157,7 +1157,7 @@ class Simulation():
         """Latent heat per unit mass of soil [J/kg] for ice/water content nb and bulk density rho_soil.
 
         Default: L_f * rho_water * nb / rho_soil, i.e. rho_water * L_f * nb per unit volume.
-        thermal.latent_heat_legacy = true: L_water_ice * nb (v1.0 as published; per unit volume
+        thermal.latent_heat_legacy = true: L_water_ice * nb (v1.0 legacy; per unit volume
         this is rho_soil * L_water_ice * nb).
         """
         if self.config.thermal.get("latent_heat_legacy", False):

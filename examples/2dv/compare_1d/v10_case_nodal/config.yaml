@@ -1,6 +1,6 @@
 # =============================================================================
 # Arctic-XBeach v1.0 thermal-only reference column (flat, dry land, Barter Island),
-# LEGACY nodal conduction form (as published); otherwise identical to v10_case
+# LEGACY nodal conduction form (v1.0 legacy); otherwise identical to v10_case
 # Used to benchmark the 2DV thermal model (examples/2dv/compare_1d/run_v10_column.py).
 # XBeach is OFF; bed is +5 m everywhere so every point is dry for the whole year.
 # =============================================================================
@@ -71,7 +71,7 @@ thermal:
   T_melt          : 273.15  # [K]
   grid_interpolation : "linear_interp_z"
   N_thaw_threshold   : 3    # as in the Barter Island case
-  conduction_form    : nodal  # v1.0 as published: nodal k times the [1,-2,1] Laplacian
+  conduction_form    : nodal  # v1.0 legacy: nodal k times the [1,-2,1] Laplacian
   # ghost_node_order not set -> default 2 (central-difference ghost node)
 
   # water (wet points only; never used here)

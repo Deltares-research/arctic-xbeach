@@ -1,5 +1,4 @@
-"""Regression tests for the code review of 26 September 2026 (research/2026-09-26_2dv-temperature-
-code-review.md): conservative collapse on stretched grids, connected niches, grid bounds, brine
+"""Regression tests for the internal code review of 26 September 2026: conservative collapse on stretched grids, connected niches, grid bounds, brine
 source connectivity, atomic steps, air-exposed faces and Recorder validation."""
 
 import numpy as np

@@ -11,17 +11,17 @@ Both models get the same one-year ERA5 forcing (2016), the same soil and the sam
 
 So only the numerics differ: v1.0 is explicit FTCS on nodes (dt = 120 s, 200 nodes, mushy k =
 mean of frozen and thawed), now by default in conservative flux form d/dz(k dT/dz) with harmonic
-face k (thermal.conduction_form = flux); the published v1.0 used nodal k * d2T/dz2
+face k (thermal.conduction_form = flux); v1.0 legacy uses nodal k * d2T/dz2
 (conduction_form = nodal, run v10_case_nodal). The 2DV model is implicit finite volume (dt = 1 h,
 200 cells, conservative flux form, mushy k from the ice/water mix).
 
 To attribute the difference, v1.0's scheme is also re-implemented here twice: exactly as coded in
 the nodal form (it reproduces the nodal v1.0 output to ~0.03 K), and with only the conduction term
-changed to the conservative flux form (arithmetic face k). A further line shows v1.0 with the latent
-heat as set in the published Barter Island case-study config.
+changed to the conservative flux form (arithmetic face k). A further line shows v1.0 with the legacy
+latent-heat convention and L_water_ice = 3.34e8 (a units check).
 
 Run run_v10_column.py (flux), run_v10_column.py v10_case_nodal (nodal) and optionally
-run_v10_column_barter_latent.py first; they write the v1.0 output.
+run_v10_column_legacy_latent.py first; they write the v1.0 output.
 Outputs (in output/compare_1d/): compare_1d.png, compare_1d_summary.txt, twodv_column.nc.
 """
 
@@ -45,7 +45,7 @@ from arctic_xbeach.thermal2dv.forcing import Forcing  # noqa: E402
 OUT_DIR = REPO / "examples" / "2dv" / "output" / "compare_1d"
 V10_NC = OUT_DIR / "v10_column.nc"                           # v1.0, matched properties, flux-form conduction
 V10_NODAL_NC = OUT_DIR / "v10_column_nodal.nc"               # v1.0, matched properties, legacy nodal conduction (optional)
-V10_BARTER_NC = OUT_DIR / "v10_column_barter_latent.nc"      # v1.0, latent heat as in the Barter config (optional)
+V10_LEGACY_LATENT_NC = OUT_DIR / "v10_column_legacy_latent.nc"  # v1.0, legacy latent-heat convention (optional)
 V10_RESULTS = REPO / "examples" / "2dv" / "compare_1d" / "v10_case" / "results" / "results.nc"  # v1.0 native output
 V10_NODAL_RESULTS = REPO / "examples" / "2dv" / "compare_1d" / "v10_case_nodal" / "results" / "results.nc"
 PHI_S, PHI_H2O = 0.6, 0.4
@@ -181,10 +181,10 @@ def main():
     T2_on_v = np.array([np.interp(depth_v, d2.depth.values, row) for row in d2.T.values])
     thaw_v10 = thaw_bottom(v10.T.values, depth_v)
     thaw_2dv = thaw_bottom(T2_on_v, depth_v)
-    thaw_barter = None
-    if V10_BARTER_NC.exists():
-        vb = xr.load_dataset(V10_BARTER_NC)
-        thaw_barter = thaw_bottom(vb.T.values, vb.depth.values)
+    thaw_legacy_latent = None
+    if V10_LEGACY_LATENT_NC.exists():
+        vb = xr.load_dataset(V10_LEGACY_LATENT_NC)
+        thaw_legacy_latent = thaw_bottom(vb.T.values, vb.depth.values)
     e10 = v10_energy_error(v10)
     vn = xr.load_dataset(V10_NODAL_NC) if V10_NODAL_NC.exists() else None
     thaw_nodal = thaw_bottom(vn.T.values, vn.depth.values) if vn is not None else None
@@ -203,8 +203,8 @@ def main():
         f"v1.0: {v10.attrs.get('wall_time_thermal_update_s', np.nan):.0f} s in the thermal update "
         f"({v10.attrs.get('wall_time_main_s', np.nan):.0f} s in total, dt = 120 s)",
         f"max thaw depth (bottom of the thawed layer): v1.0 {thaw_v10.max():.2f} m, 2DV {thaw_2dv.max():.2f} m"
-        + (f", v1.0 nodal (as published) {thaw_nodal.max():.2f} m" if thaw_nodal is not None else "")
-        + (f", v1.0 with the published Barter-config latent heat {thaw_barter.max():.2f} m" if thaw_barter is not None else ""),
+        + (f", v1.0 nodal (legacy) {thaw_nodal.max():.2f} m" if thaw_nodal is not None else "")
+        + (f", v1.0 legacy latent heat (L = 3.34e8) {thaw_legacy_latent.max():.2f} m" if thaw_legacy_latent is not None else ""),
     ]
     if vn is not None:
         lines.append(f"v1.0 nodal scheme re-implemented as coded: max |T - v1.0 nodal output| = "
@@ -245,9 +245,9 @@ def main():
     ax.plot(doy, thaw_2dv, "C3--", lw=2, label="2DV")
     ax.plot(doy, thaw_cons, "k:", lw=1.5, label="v1.0 scheme in conservative flux form (re-implemented)")
     if thaw_nodal is not None:
-        ax.plot(doy, thaw_nodal, "C1-.", lw=1.5, label="v1.0 nodal form (as published)")
-    if thaw_barter is not None:
-        ax.plot(doy, thaw_barter, "C2:", lw=2, label="v1.0 as published, Barter-config latent heat")
+        ax.plot(doy, thaw_nodal, "C1-.", lw=1.5, label="v1.0 nodal form (legacy)")
+    if thaw_legacy_latent is not None:
+        ax.plot(doy, thaw_legacy_latent, "C2:", lw=2, label="v1.0 legacy latent heat, L = 3.34e8")
     ax.set(ylabel="thaw depth (m)", ylim=(0, None))
     ax.invert_yaxis()
     ax.legend(frameon=False, loc="lower left")
@@ -266,7 +266,7 @@ def main():
     if e10 is not None:
         ax.plot(doy[:len(e10)], e10 / 1e6, "C0-", lw=2, label="v1.0 (flux form)")
     if e10_nodal is not None:
-        ax.plot(doy[:len(e10_nodal)], e10_nodal / 1e6, "C1-.", lw=1.5, label="v1.0 nodal (as published)")
+        ax.plot(doy[:len(e10_nodal)], e10_nodal / 1e6, "C1-.", lw=1.5, label="v1.0 nodal (legacy)")
     ax.plot(doy, np.zeros_like(doy) + d2.attrs["energy_budget_error_J"] / 1e6, "C3--", lw=2, label="2DV")
     ax.set(xlabel="day of year 2016", ylabel="energy error (MJ m$^{-2}$)")
     ax.legend(frameon=False, loc="center left")

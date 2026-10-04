@@ -24,10 +24,10 @@ import xarray as xr
 # === CONFIGURATION ===
 SCRIPT_DIR = Path(__file__).resolve().parent
 PROJ_DIR = SCRIPT_DIR.parents[2]                      # worktree root (contains main.py)
-CASE_DIR = SCRIPT_DIR / "v10_case_barter_latent"                    # config.yaml, x.grd, bed.dep, ne_layer.txt
+CASE_DIR = SCRIPT_DIR / "v10_case_legacy_latent"                    # config.yaml, x.grd, bed.dep, ne_layer.txt
 ERA5_PATH = Path("D:/Git/arctic-xbeach/examples/case_studies/barter_island/database/era5.csv")  # full ERA5 series
 STORM_FILE = CASE_DIR / "storms_dry.csv"              # written below: WL = 0, Hs = 0 every hour
-OUT_NC = PROJ_DIR / "examples" / "2dv" / "output" / "compare_1d" / "v10_column_barter_latent.nc"
+OUT_NC = PROJ_DIR / "examples" / "2dv" / "output" / "compare_1d" / "v10_column_legacy_latent.nc"
 X_INDEX = 1                                           # middle x-point (edge point 0 always gets thaw_depth = 0 in v1.0)
 PRINT_TO_SCREEN = False                               # v1.0 progress log (always written to v10_case/run.log)
 

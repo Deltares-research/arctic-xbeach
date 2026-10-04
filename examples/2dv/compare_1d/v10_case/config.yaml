@@ -70,7 +70,7 @@ thermal:
   T_melt          : 273.15  # [K]
   grid_interpolation : "linear_interp_z"
   N_thaw_threshold   : 3    # as in the Barter Island case
-  conduction_form    : flux  # conservative d/dz(k dT/dz); 'nodal' = v1.0 as published
+  conduction_form    : flux  # conservative d/dz(k dT/dz); 'nodal' = v1.0 legacy
   # ghost_node_order not set -> default 2 (central-difference ghost node)
 
   # water (wet points only; never used here)

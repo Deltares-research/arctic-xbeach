@@ -9,7 +9,7 @@ Cases (conceptual mode: constant air temperature, no radiation, XBeach off, 1 ye
                            config read from the main checkout (not in this worktree)
 
 Variants:
-    legacy   thermal.conduction_form = nodal, latent_heat_legacy = true (v1.0 as published)
+    legacy   thermal.conduction_form = nodal, latent_heat_legacy = true (v1.0 legacy)
     new      thermal.conduction_form = flux,  latent_heat_legacy = false (defaults)
 
 The "Dirichlet" cases are driven by v1.0's sensible heat flux h (T_air - T_s) with ERA5 wind

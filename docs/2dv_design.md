@@ -13,9 +13,9 @@ No existing code does what you describe. That is: one cross-shore grid in which 
 - **ACE** (Sandia) is 2DV permafrost plus mechanics. It does not resolve water temperature, it prescribes the face temperature as a Dirichlet condition, and it uses explicit time stepping [V].
 - **thermalFOAM** is enthalpy–porosity with ablation, but only at niche and flume scale [V].
 - **CryoGrid** has the right per-cell fraction and enthalpy state, but it is 1D [V].
-- **Frederick & Buffett** is a 2D temperature–salinity transect, but at shelf scale [per landscape report].
+- **Frederick & Buffett** is a 2D temperature–salinity transect, but at shelf scale [U].
 
-This would therefore be new, and a defensible GMD v2 or proposal deliverable, not a reinvention.
+This would therefore be new, not a reinvention.
 
 The literature points to one design, and it is buildable in Python (numpy and scipy) at a cost comparable to one XBeach storm per simulated year:
 
@@ -131,7 +131,7 @@ For the `smooth` and `saline` curves, use Newton on T with Jacobian c + L_v dθ_
 
 ### 4.3 Energy bookkeeping
 
-Log a global budget every step: ΔH_domain versus the sum of surface, geothermal, relaxation, advective and cell-removal fluxes. This catches remapping and wet/dry leaks, which v1.0's re-interpolation could not detect. It is also a strong GMD selling point.
+Log a global budget every step: ΔH_domain versus the sum of surface, geothermal, relaxation, advective and cell-removal fluxes. This catches remapping and wet/dry leaks, which v1.0's re-interpolation could not detect.
 
 ---
 
@@ -148,7 +148,7 @@ Forcing is the same ERA5 set v1.0 already reads.
 - **Longwave.** ERA5 strd downward minus εσT_s⁴ with the **model's own surface temperature**, ε = 0.97 for water and 0.95–0.97 for soil [V: COARE 3.6]. Linearise implicitly: 4εσT³ goes on the diagonal.
 - **Sensible and latent heat over water.** Recompute from T2m, dewpoint, U10 and the model SST with bulk coefficients c_H = c_E = 1.3 × 10⁻³ [V: Delft3D-FLOW heat model 5 default; D-Flow FM]. **Do not use ERA5 sshf/slhf over water**: they are computed with ERA5's own 0.25° SST, and coastal cells blend land and ice [V reasoning in agent report; S]. Over land, keep the v1.0 options (Man 2023 sensible heat, ERA5 latent heat) so v1.0 calibration carries over.
 - **Sea ice.** In the resolved domain it emerges on its own (§3.1). The top water cells freeze, albedo switches on the ice fraction, and in water shallower than the ice thickness the ice grounds and couples the seabed to the atmosphere. That is the bottom-fast ice effect observed at Elson Lagoon [V: Overduin et al. 2012; Angelopoulos et al. 2019]. ERA5 sea-ice cover is still used for the XBeach gate and optionally for weighting offshore fluxes, Q = (1 − A)Q_ow + A Q_io [U].
-- **Snow** is deferred, but needed. It is the prime suspect for the v1.0 cold bias in RC1 point 2 (see landscape report §0). A single-layer ERA5 snow-depth insulation, the CryoGrid simple scheme, drops into the same top-flux slot.
+- **Snow** is deferred, but needed, because it controls winter cooling of the ground. A single-layer ERA5 snow-depth insulation, the CryoGrid simple scheme, drops into the same top-flux slot.
 
 ### 5.2 Water-column mixing and the large-scale ocean in a 2DV slice
 
@@ -204,7 +204,7 @@ Heat alone will not erode the bluff [V: Ravens et al. 2012; Barnhart et al. 2014
    - When it exceeds d_crit, collapse the column above. Options for d_crit:
      - a calibrated value, of the order of the niche depth observed before collapse at Drew Point;
      - Hoque & Pollard stability;
-     - a tensile threshold of about 100 kPa [U; landscape report].
+     - a tensile threshold of about 100 kPa [U].
    - Move the block's cells down into the niche and the toe with **their enthalpy conserved**. The fallen block then thaws in place and is removed by rules 1 and 3, which is how Barnhart's "block degradation" phase arises.
 3. **During XBeach events,** erosion is whatever XBeach removes above the non-erodible layer (§6).
 
@@ -220,7 +220,7 @@ Heat alone will not erode the bluff [V: Ravens et al. 2012; Barnhart et al. 2014
 
 | Quantity | Default | Range | Source |
 |---|---|---|---|
-| L_f; ρ_i; ρ_w | 3.34e5 J/kg; 917; 1000 (sea 1025) kg/m³ | — | [V] preprint Table 1 |
+| L_f; ρ_i; ρ_w | 3.34e5 J/kg; 917; 1000 (sea 1025) kg/m³ | — | [V] |
 | k_ice | 2.2 (2.07 at 0 °C, T-dependent: 9.828 exp(−0.0057 T[K])) | — | [V] Yen 1981 |
 | k_water; k_seawater | 0.57; 0.56 | — | [U]; Angelopoulos 2019 uses 0.57 [V] |
 | k_mineral (silt); k_quartz; k_organic; k_air | 2.9; 7.7; 0.25; 0.025 | 2.0–3.0 | [U] Johansen 1975; CryoGrid |
@@ -252,7 +252,7 @@ The event logic in `check_xbeach` (sea ice, runup threshold, weekly inter-storm 
   - Where Δzb(x) < 0, remove sediment fraction top-down from each column. Cells fully emptied become water or air; the enthalpy removed goes into the budget.
   - Where Δzb > 0, add sediment fraction at the local water temperature, thawed. This mirrors v1.0's `fill_value_top_water`.
   - During the event, K_t and h are taken from XBeach (H, u_rms, D_r).
-- **XBeach on Linux.** v1.0 launches XBeach through `run.bat` with `shell=True`. Replace that with `subprocess.run([exe, "params.txt"], cwd=...)` so SLURM ensembles work. The landscape report lists this for v1.1 anyway.
+- **XBeach on Linux.** v1.0 launches XBeach through `run.bat` with `shell=True`. Replace that with `subprocess.run([exe, "params.txt"], cwd=...)` so SLURM ensembles work.
 
 ---
 
@@ -273,7 +273,7 @@ Each step gates the next.
    - Comparison with the 2011 USGS Barter CTD (bottom water at 4.7 m, lagoon at 1.2 m).
 5. **Bluff melt.**
    - Lumped check against ArcticBeach: retreat ≈ h(T_w − T_m)/(L_c·height) when conduction into the block is small [V formula: Rolph et al. 2022].
-   - Omonigbehin et al. (2025) flume niche series (scale down the grid). Doing this also answers RC1 point 7.
+   - Omonigbehin et al. (2025) flume niche series (scale down the grid).
 6. **Field.**
    - Barter Island borehole temperatures and 2–3 yr shoreline retreat, run against v1.0.
    - Drew Point intercomparison with ACE (niche and block cycle, Bayat et al. 2026 calibration case on Zenodo [V]).
@@ -282,7 +282,7 @@ Each step gates the next.
 
 ## 8. Implementation plan
 
-Keep v1.0 intact for the GMD revision. Add a switch `thermal.model: "1d" | "2dv"`, so the `Simulation` API and `main.py` loop stay the same.
+Keep v1.0 intact. Add a switch `thermal.model: "1d" | "2dv"`, so the `Simulation` API and `main.py` loop stay the same.
 
 ```
 arctic_xbeach/
@@ -381,8 +381,9 @@ ice cell that melts part-way through the step therefore ends up above its meltin
   and it thaws 0.2 m deeper and refreezes 18 days later.
 - A replica of v1.0's scheme reproduces v1.0 to 0.03 K. The same replica in flux form reproduces
   the 2DV model.
-- For the v1.0 revision, the fix is a one-line change to face conductivities in `thermal_update`.
-  The latent-heat units in the case-study configs need checking as well (see the examples README).
+- In v1.0 the fix is a change to the face conductivities in `thermal_update`, now
+  `thermal.conduction_form: flux`. `L_water_ice` is now in J/kg; `latent_heat_legacy: true`
+  reproduces v1.0.
 
 ---
 
@@ -460,10 +461,10 @@ unfrozen sediment; the 2DV model owns heat, salt, ice, ablation and block failur
 1. **Field-scale h controls everything at the face.** Plausible values span 250 to more than 10⁴ W m⁻² K⁻¹, and lab-to-field transfer is untested. Above a few hundred, retreat is limited by contact time and matrix removal, so put effort into the wet/dry timing and removal rules as much as into h. Make h the first sensitivity parameter.
 2. **Alongshore physics in a 2DV slice.** Nearshore water temperature at Barter is set by lagoon outflow, alongshore currents and stratification. τ_flush and T_ref absorb all of it. Mitigate by forcing the calm-weather T_ref from observations (CTD, SST) and reporting τ_flush sensitivity. Note in the paper that this is a slice model.
 3. **Overhang versus a single-valued XBeach bed.** Niche geometry exists only in the thermal model, so block failure is a parameterised hand-off, not emergent. This is the same limitation as ACE and Barnhart, but say so.
-4. **No nearshore ocean data shallower than 10 m in the reanalyses.** T_ref construction becomes a site-specific calibration, which works against transferability (RC1 point 5).
+4. **No nearshore ocean data shallower than 10 m in the reanalyses.** T_ref construction becomes a site-specific calibration, which works against transferability.
 5. **Energy leaks at wet/dry switching and cell removal.** The global budget in §4.3 is the mitigation. Make it a test.
 6. **Solver cost is not the risk:** about 0.5–2 h per simulated year serial, trivially parallel over SLURM ensemble members. The risk is Python-side overhead in assembly. Vectorise assembly from the start; use numba only if profiling says so.
-7. **Scope versus the GMD revision.** Do not block the v1.0 revision on this. The snow layer, the revived Kobayashi h and the saline freezing point (landscape report §2d) help both versions and should come first.
+7. **Scope versus v1.0.** Do not block v1.0 development on this. The snow layer, the revived Kobayashi h and the saline freezing point help both versions and should come first.
 
 ---
 

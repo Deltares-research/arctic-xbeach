@@ -8,7 +8,7 @@ literature behind it are in `docs/2dv_design.md`.
 Run from the repository root with the project environment:
 
 ```bash
-python -m pytest tests                           # 57 tests (thermal, radiation, coupling, ERA5, review fixes), ~40 s
+python -m pytest tests                           # 58 tests (thermal, radiation, coupling, ERA5, review fixes), ~40 s
 python examples/2dv/run_analytical_suite.py      # analytical figure, ~1 min
 python examples/2dv/run_flume_block.py           # ~45 s
 python examples/2dv/run_bluff_niche.py           # ~1.5 min
@@ -78,7 +78,7 @@ to `examples/2dv/output/<case>/` (`*.nc` is git-ignored; the PNGs are committed)
 
 `test_coupling.py` (12) and `test_era5_forcing.py` (2) are described under *Coupling with XBeach*.
 
-`test_review_fixes.py` (15) covers the findings of the code review of 26 September 2026. Each of
+`test_review_fixes.py` (15) covers the findings of an internal code review (26 September 2026). Each of
 these tests fails on the code before the fix.
 - **Collapse is conservative on stretched grids.** Mineral, H2O, salt and energy are remapped by
   geometric overlap. Only the niche water the block displaces is logged as an exchange.
@@ -226,11 +226,11 @@ differ.
 
 ```bash
 python examples/2dv/compare_1d/run_v10_column.py                  # v1.0, ~5 min (needs the full ERA5 file)
-python examples/2dv/compare_1d/run_v10_column_barter_latent.py    # v1.0 with the Barter-config latent heat
+python examples/2dv/compare_1d/run_v10_column_legacy_latent.py    # v1.0, legacy latent-heat convention
 python examples/2dv/compare_1d/run_compare_1d.py                  # 2DV column, v1.0 scheme replicas, figure
 ```
 
-| | v1.0 as published (`conduction_form: nodal`) | 2DV | v1.0 fixed (`conduction_form: flux`, now the default) |
+| | v1.0 legacy (`conduction_form: nodal`) | 2DV | v1.0 fixed (`conduction_form: flux`, now the default) |
 |---|---|---|---|
 | Maximum thaw depth | 1.16 m | 0.94 m | 0.90 m |
 | Refreeze of the thawed layer | day 330 | day 312 | day 311 |
@@ -252,11 +252,10 @@ against 3.324 m analytic (legacy 2.819 m).
   - A re-implementation of v1.0's scheme reproduces its output to 0.03 K. Changing only the
     conduction term to the flux form gives the 2DV result (mean difference 0.001 K). The
     implicit time step and the mushy-zone treatment do not matter here; conservation does.
-- **Barter-config latent heat.** The Barter Island case-study config sets `L_water_ice:
-  334000000` with `rho_soil: None`. v1.0 stores enthalpy per unit mass and adds
-  `L_water_ice * nb` to it, so the effective latent heat is ρ_soil · L · nb ≈ 2215 × 3.34e8 ×
-  0.263 ≈ 1.9e11 J m⁻³, about 2200 times ρ_w L nb. Run with that setting, the column never thaws
-  in 2016: the surface sits at 0 °C all summer (green line).
+- **Latent-heat units.** `L_water_ice` is now in J/kg, and the volumetric latent heat is
+  ρ_w L nb. v1.0 stored enthalpy per unit mass and added `L_water_ice * nb` to it;
+  `latent_heat_legacy: true` reproduces that convention. `run_v10_column_legacy_latent.py` runs
+  the legacy convention with `L_water_ice: 334000000` as a units check (green line).
 
 Figure: `output/compare_1d/compare_1d.png`. It shows ground temperature at five depths, thaw
 depth, the 2DV − v1.0 temperature difference and the energy budget error.

@@ -81,9 +81,9 @@ thermal:
   # L_water_ice * nb to it, so the effective volumetric latent heat is rho_soil * L_water_ice * nb.
   # rho_soil = 1000 and L_water_ice = 334000 J/kg give rho_w * L * nb = 1.336e8 J m-3 (2DV target).
   # Effective volumetric c is c_soil_* exactly, independent of rho_soil.
-  L_water_ice : 334000000   # as in the published Barter Island case-study config
-  latent_heat_legacy : true  # reproduce v1.0 as published: per-mass latent = L_water_ice * nb
-  conduction_form    : nodal # v1.0 as published
+  L_water_ice : 334000000   # legacy per-volume value (units check)
+  latent_heat_legacy : true  # reproduce v1.0 legacy: per-mass latent = L_water_ice * nb
+  conduction_form    : nodal # v1.0 legacy
   rho_water   : 1000
   rho_ice     : 917      # unused by the 1D enthalpy scheme
   rho_soil    : None  # as in the Barter config: nb*rho_w + (1-nb)*rho_particle     # [kg/m3] explicit, so that rho_soil * L_water_ice = rho_w * L

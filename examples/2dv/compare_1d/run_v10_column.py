@@ -3,7 +3,7 @@
 
 The case (CASE_NAME/config.yaml) is driven through the normal v1.0 path (Simulation + main),
 with XBeach off: v10_case uses the conservative flux-form conduction (default), v10_case_nodal
-the legacy nodal form (v1.0 as published). The v1.0 source is not modified by this script. The only intervention is a diagnostic
+the legacy nodal form (v1.0 legacy). The v1.0 source is not modified by this script. The only intervention is a diagnostic
 observer around `sim.thermal_update` (instance attribute) that calls the original method
 unchanged and records, per wrapper hour:
   - the initial temperature profile (before the first sub-step),
@@ -27,8 +27,8 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 PROJ_DIR = SCRIPT_DIR.parents[2]                      # worktree root (contains main.py)
 CASE_NAME = "v10_case"                                # case folder; optional override: python run_v10_column.py v10_case_nodal
 OUT_NAMES = {"v10_case": "v10_column.nc",             # flux-form conduction (default)
-             "v10_case_nodal": "v10_column_nodal.nc", # legacy nodal conduction (v1.0 as published)
-             "v10_case_barter_latent": "v10_column_barter_latent.nc"}
+             "v10_case_nodal": "v10_column_nodal.nc", # legacy nodal conduction (v1.0 legacy)
+             "v10_case_legacy_latent": "v10_column_legacy_latent.nc"}
 if len(sys.argv) > 1:
     CASE_NAME = sys.argv[1]
 CASE_DIR = SCRIPT_DIR / CASE_NAME                     # config.yaml, x.grd, bed.dep, ne_layer.txt

@@ -1,6 +1,6 @@
-2DV: 63 s wall for one year (8784 steps of 1 h); energy budget error 1.16e-03 J m-2
+2DV: 58 s wall for one year (8784 steps of 1 h); energy budget error 1.10e-03 J m-2
 v1.0: 208 s in the thermal update (341 s in total, dt = 120 s)
-max thaw depth (bottom of the thawed layer): v1.0 0.90 m, 2DV 0.94 m, v1.0 nodal (as published) 1.16 m, v1.0 with the published Barter-config latent heat 0.00 m
+max thaw depth (bottom of the thawed layer): v1.0 0.90 m, 2DV 0.94 m, v1.0 nodal (legacy) 1.16 m, v1.0 legacy latent heat (L = 3.34e8) 0.00 m
 v1.0 nodal scheme re-implemented as coded: max |T - v1.0 nodal output| = 0.032 K
 v1.0 flux form vs its re-implementation (arithmetic face k): max |T diff| = 0.559 K
 v1.0 scheme in conservative flux form: max thaw depth 0.90 m; max |T - 2DV| = 4.99 K, mean -0.001 K
@@ -9,4 +9,4 @@ T at 0.5 m: mean difference 2DV - v1.0 +0.01 K, RMS 0.09 K, max |diff| 0.47 K
 T at 1 m: mean difference 2DV - v1.0 +0.01 K, RMS 0.03 K, max |diff| 0.21 K
 T at 2 m: mean difference 2DV - v1.0 +0.00 K, RMS 0.01 K, max |diff| 0.04 K
 T at 5 m: mean difference 2DV - v1.0 +0.00 K, RMS 0.00 K, max |diff| 0.01 K
-v1.0 column energy change minus boundary input after one year: +3.78e-05 MJ m-2 (max |.| over the year 9.92e-05 MJ m-2); nodal +136.0 MJ m-2 (2DV: +1.2e-09 MJ m-2)
+v1.0 column energy change minus boundary input after one year: +3.78e-05 MJ m-2 (max |.| over the year 9.92e-05 MJ m-2); nodal +136.0 MJ m-2 (2DV: +1.1e-09 MJ m-2)
