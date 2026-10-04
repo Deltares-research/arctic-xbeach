@@ -1,0 +1,3 @@
+XBeach calls: 1D 51, 2DV 51
+volume eroded above z = 0 by XBeach: 1D 69.11 m3/m, 2DV 33.43 m3/m (2DV ablation adds 0.13 m3/m of mineral)
+ne_layer on 2015-08-01 above z = 0 in the window: 1D mean 0.92 m (max 2.46), 2DV mean 0.94 m (max 2.97)

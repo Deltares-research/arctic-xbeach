@@ -53,7 +53,10 @@ xbeach:
 
   # general settings
   with_xbeach : True  # include the xbeach module in the model, default true
-  version     : d:\software\XBeach\releases\halloween\XBeach_1.24.6057_Halloween_win64_netcdf\xbeach.exe
+  version     : d:\software\XBeach\releases\halloween\XBeach_1.24.6057_Halloween_win64_netcdf\xbeach.exe  # legacy; used only if 'executable' is absent
+  # XBeach 1.24 (Halloween) executable, absolute path (~ and $ENV_VARS are expanded). It is started directly
+  # (no .bat), so on the Linux HPC point this to the Linux build, e.g. '$HOME/xbeach/1.24/bin/xbeach'.
+  executable  : 'D:/Git/thermo-morphological-model/xbeach/XBeach_1.24.6057_Halloween_win64_netcdf/xbeach.exe'
 
   # physical processes:
   with_wind     : False  # include wind in the xbeach model
@@ -87,7 +90,10 @@ xbeach:
 
 # thermal moodel parameters
 thermal:
-  L_water_ice: 334000000
+  L_water_ice: 334000  # [J/kg] latent heat of fusion; volumetric latent heat = rho_water * L_water_ice * nb.
+                       # latent_heat_legacy: true reproduces v1.0 (per-mass latent = L_water_ice * nb)
+  latent_heat_legacy: false  # true: per-mass latent = L_water_ice * nb (v1.0 legacy)
+  conduction_form: flux      # 'flux' = conservative d/dz(k dT/dz); 'nodal' = v1.0 legacy (k d2T/dz2)
   MSL: 0
   N_thaw_threshold: 3
   T_melt: 273.15

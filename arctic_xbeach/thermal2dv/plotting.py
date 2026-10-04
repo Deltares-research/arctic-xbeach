@@ -1,0 +1,69 @@
+"""Plot helpers for 2DV snapshots (house style: no titles, larger fonts, fixed colour limits)."""
+
+import matplotlib as mpl
+import matplotlib.pyplot as plt
+import numpy as np
+from matplotlib.colors import BoundaryNorm, ListedColormap, TwoSlopeNorm
+from matplotlib.patches import Patch
+
+from .output import CLASS_NAMES
+
+PHASE_COLORS = ["#ffffff", "#2b83ba", "#bfe7f7", "#5b3a1e", "#c49a6c", "#e8d3a9"]
+PHASE_CMAP = ListedColormap(PHASE_COLORS)
+PHASE_NORM = BoundaryNorm(np.arange(-0.5, 6.5, 1.0), PHASE_CMAP.N)
+
+
+def apply_style():
+    mpl.rcParams.update({
+        "font.size": 11, "axes.labelsize": 12, "axes.titlesize": 12, "xtick.labelsize": 11,
+        "ytick.labelsize": 11, "legend.fontsize": 10, "axes.spines.top": False,
+        "axes.spines.right": False, "savefig.bbox": "tight",
+    })
+
+
+def panel_label(ax, text):
+    ax.text(0.01, 0.98, text, transform=ax.transAxes, va="top", ha="left", fontsize=12, fontweight="bold",
+            bbox=dict(facecolor="white", edgecolor="none", alpha=0.7, pad=1.5))
+
+
+def plot_phase(ax, ds, it, rasterized=True):
+    m = ax.pcolormesh(ds.x_edge, ds.z_edge, ds.phase.isel(time=it), cmap=PHASE_CMAP, norm=PHASE_NORM,
+                      rasterized=rasterized)
+    return m
+
+
+def phase_legend(ax, loc="lower left", classes=range(6), ncol=3, **kwargs):
+    handles = [Patch(facecolor=PHASE_COLORS[c], edgecolor="0.5", label=CLASS_NAMES[c]) for c in classes]
+    ax.legend(handles=handles, loc=loc, ncol=ncol, frameon=True, framealpha=0.9, **kwargs)
+
+
+def plot_temperature(ax, ds, it, vlim=10.0, rasterized=True, contour=True):
+    T = ds.T.isel(time=it)
+    m = ax.pcolormesh(ds.x_edge, ds.z_edge, T, cmap="RdBu_r", norm=TwoSlopeNorm(0.0, -vlim, vlim),
+                      rasterized=rasterized)
+    if contour and np.nanmin(T) < 0 < np.nanmax(T):
+        ax.contour(ds.x, ds.z, T, levels=[0.0], colors="k", linewidths=0.8)
+    return m
+
+
+def plot_salinity(ax, ds, it, field="S_bulk", vmin=0.0, vmax=40.0, rasterized=True):
+    """Bulk (or brine, field="S_liq") salinity; cmocean haline if installed, else viridis."""
+    try:
+        import cmocean
+        cmap = cmocean.cm.haline
+    except ImportError:
+        cmap = "viridis"
+    return ax.pcolormesh(ds.x_edge, ds.z_edge, ds[field].isel(time=it), cmap=cmap, vmin=vmin, vmax=vmax,
+                         rasterized=rasterized)
+
+
+def plot_grid(ax, ds, color="k", lw=0.25, alpha=0.35):
+    """Overlay the cell edges (all cells, including inactive air cells)."""
+    xe, ze = ds.x_edge.values, ds.z_edge.values
+    ax.vlines(xe, ze[0], ze[-1], colors=color, linewidths=lw, alpha=alpha, zorder=3)
+    ax.hlines(ze, xe[0], xe[-1], colors=color, linewidths=lw, alpha=alpha, zorder=3)
+
+
+def save(fig, path, dpi=300):
+    fig.savefig(path, dpi=dpi)
+    plt.close(fig)

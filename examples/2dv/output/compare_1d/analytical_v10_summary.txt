@@ -1,0 +1,26 @@
+Arctic-XBeach v1.0 analytical tests: legacy (nodal conduction, L_water_ice * nb) vs new (flux-form conduction, rho_w L nb latent). Errors = model - analytical at the x-midpoint.
+
+01_dirichlet_warming               legacy day  30: max|err|  0.3735 K, RMSE  0.1301 K
+01_dirichlet_warming               legacy day  90: max|err|  0.4117 K, RMSE  0.1077 K
+01_dirichlet_warming               legacy day 365: max|err|  0.1624 K, RMSE  0.0778 K
+01_dirichlet_warming               new    day  30: max|err|  0.3735 K, RMSE  0.1301 K
+01_dirichlet_warming               new    day  90: max|err|  0.4117 K, RMSE  0.1077 K
+01_dirichlet_warming               new    day 365: max|err|  0.1624 K, RMSE  0.0778 K
+02_dirichlet_cooling               legacy day  30: max|err|  0.2211 K, RMSE  0.0486 K
+02_dirichlet_cooling               legacy day  90: max|err|  0.2198 K, RMSE  0.0408 K
+02_dirichlet_cooling               legacy day 365: max|err|  0.0951 K, RMSE  0.0285 K
+02_dirichlet_cooling               new    day  30: max|err|  0.2211 K, RMSE  0.0486 K
+02_dirichlet_cooling               new    day  90: max|err|  0.2198 K, RMSE  0.0408 K
+02_dirichlet_cooling               new    day 365: max|err|  0.0951 K, RMSE  0.0285 K
+03_neumann_constant                legacy day  30: max|err|  0.0011 K, RMSE  0.0003 K
+03_neumann_constant                legacy day  90: max|err|  0.0007 K, RMSE  0.0002 K
+03_neumann_constant                legacy day 365: max|err|  0.0503 K, RMSE  0.0130 K
+03_neumann_constant                new    day  30: max|err|  0.0011 K, RMSE  0.0003 K
+03_neumann_constant                new    day  90: max|err|  0.0007 K, RMSE  0.0002 K
+03_neumann_constant                new    day 365: max|err|  0.0503 K, RMSE  0.0130 K
+04_dirichlet_warming_latent_heat   legacy day  30: max|err|  3.9540 K, RMSE  0.8811 K, thaw depth 0.805 m (analytical 0.953 m)
+04_dirichlet_warming_latent_heat   legacy day  90: max|err|  3.7275 K, RMSE  1.0644 K, thaw depth 1.409 m (analytical 1.650 m)
+04_dirichlet_warming_latent_heat   legacy day 365: max|err|  3.8793 K, RMSE  1.3891 K, thaw depth 2.819 m (analytical 3.324 m)
+04_dirichlet_warming_latent_heat   new    day  30: max|err|  1.2443 K, RMSE  0.3095 K, thaw depth 0.906 m (analytical 0.953 m)
+04_dirichlet_warming_latent_heat   new    day  90: max|err|  1.4159 K, RMSE  0.3023 K, thaw depth 1.611 m (analytical 1.650 m)
+04_dirichlet_warming_latent_heat   new    day 365: max|err|  1.6490 K, RMSE  0.5561 K, thaw depth 3.322 m (analytical 3.324 m)

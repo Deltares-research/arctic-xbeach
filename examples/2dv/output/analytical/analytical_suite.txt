@@ -1,0 +1,11 @@
+(a) conduction: max |T - erfc| = 0.006 K
+(b) Stefan thaw: front error at 30 d = +0.5%
+(c) ice block: melted area at 12 h, model/analytic = 1.013
+(d) cold face: 0.853 m/day against 0.929 idealised (-8.2%; the meltwater cools the water at the face)
+(e) fresh ice at 10 d: -1.5% vs Neumann; sea ice -18.4% vs Neumann with dT = Tf(S) - Ts
+(f) salt diffusion, open water: max error 0.81% of the step
+(f) salt diffusion, pore water: max error 0.46% of the step
+(g) saline freezing, S = 5: max |f - liquidus| = 2.2e-16
+(g) saline freezing, S = 15: max |f - liquidus| = 1.1e-16
+(g) saline freezing, S = 35: max |f - liquidus| = 1.1e-16
+(h) brine: water under the ice 32.13 psu (from 30); ice bulk 7.8-32.0 psu; salt budget -1.1e-10, energy budget 3.7e-11
