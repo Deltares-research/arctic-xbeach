@@ -39,6 +39,8 @@ ERA5_FLUX_SHIFT_HOURS = 1
 THERMAL_DT = 360       # thermal substep [s]. 360 s keeps Fo <= 0.38 over the whole search range (k up to 4.0, C down to 1.5e6) and
                        # changes the objective of the published best by 0.0001 K against 120 s (v11_runs/thermal_speed_tests); None = base config
 OUTPUT_WINDOW = ("31-05-2016", "15-09-2016")  # netCDF output only over the borehole record (BI_T-1); None = whole run
+SENSOR_DEPTH_OFFSET = 0.0  # [m] added to each sensor depth before the nearest-node lookup. Nodes are cell centres, so 0 is the true depth.
+                          # 0.1 repeats the published objective and thermal trial 490 (0.82 K at dt 90 s); it is 2 cells of the 0.05 m grid
 
 STUDY_NAME = "calibration_optuna"
 MAKE_FIGURE = True     # temperature_layers.png in every trial folder
@@ -215,8 +217,7 @@ def run_simulation(sim_dir: Path) -> float:
             abs_zgr = nc.variables["abs_zgr"][:][0, 1, :]  # column of grid point 1, as in the published driver
 
         depth_model = (abs_zgr - abs_zgr[0]) * -1
-        dz = 0.1  # the observed depth is matched dz below the surface node (published choice)
-        depth_map = {f"dpth{d}cm": d / 100 + dz for d in range(0, 426, 25) if d not in (75,)}  # 0, 25, 50, 100, ..., 425 cm (17 depths)
+        depth_map = {f"dpth{d}cm": d / 100 + SENSOR_DEPTH_OFFSET for d in range(0, 426, 25) if d not in (75,)}  # 0, 25, 50, 100, ..., 425 cm (17 depths)
 
         rmse_list, bias_list, model_temps = [], [], {}
         surface_temp_model = None
