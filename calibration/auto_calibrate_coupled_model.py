@@ -1,0 +1,424 @@
+"""Step 2 of the calibration: coupled (thermal + XBeach) Optuna calibration of the XBeach and wrapper parameters, thermal parameters fixed.
+
+Port of the published driver (coupled study 20260214, best trial 88). Objective, parameter ranges and metrics are unchanged:
+the combined RMSE sqrt((RMSE_bluff_edge^2 + RMSE_shoreline^2) / 2) of the modelled bluff edge (z = BLUFF_ELEVATION) and shoreline
+(z = SHORELINE_ELEVATION), both normalised at NORMALIZATION_DATE, over the calibration period. What changed for v1.1: paths in the
+configuration block (pathlib), seeded sampler, optional starting parameter set, N_TRIALS / N_PARALLEL as variables, the v1.1 solver
+options in every trial config, trials run in a child process of the current interpreter (Windows and Linux), and the 10-year thermal
+spin-up is computed ONCE (RUN_ROOT_DIR/spinup_state.npz) and loaded by every trial (model.spinup_state_in), because XBeach does
+not run during the spin-up and the thermal parameters are the same in all trials.
+
+Workflow
+  1. template: BASE_SIM_DIR is copied to RUN_ROOT_DIR/template; the thermal section is taken from THERMAL_CONFIG_YAML (the best config.yaml of
+     step 1) if given, the v1.1 options and forcing paths are applied.
+  2. spin-up: a run of the template without XBeach from time_start to the end of the spin-up writes spinup_state.npz (skipped if it exists
+     and was made with the same thermal config; delete the file when forcing, bathymetry or thermal parameters change).
+  3. trials: copy of the template + sampled parameters + spinup_state_in, run, score, delete results.nc.
+
+Run:  python calibration/auto_calibrate_coupled_model.py        (see calibration/README.md)
+"""
+# === CONFIGURATION ===
+from pathlib import Path
+
+REPO_DIR = Path(__file__).resolve().parents[1]  # arctic-xbeach checkout that is imported by the trials
+BASE_SIM_DIR = Path(r"N:\arctic-xbeach-runs\coupled_calibration_runs\20260214_calibration_runs\base")  # template run folder (config.yaml, x.grd, bed.dep, ne_layer.txt)
+RUN_ROOT_DIR = Path(r"N:\arctic-xbeach-runs\v11_runs\coupled_calibration")  # template, spin-up state, trial folders, optuna_study.db, logs
+THERMAL_CONFIG_YAML = Path(r"N:\arctic-xbeach-runs\v11_runs\thermal_calibration\optuna_trial_000490\config.yaml")  # best thermal trial of step 1 (RMSE 0.8203 K); its thermal section replaces the template's. None = keep the template's thermal section
+THERMAL_DT = 90        # [s] thermal timestep of the coupled runs, replaces thermal.dt of the config above (trial 490 was calibrated at 360 s, too large for a wet surface node). None = keep it
+BLUFF_EDGES_CSV = Path(r"D:\Git\thermo-morphological-model\database\ts_datasets\bluff_edges_without_geometry.csv")  # columns time, distance_from_ref
+SHORELINES_CSV = Path(r"D:\Git\thermo-morphological-model\database\ts_datasets\shore_lines_without_geometry.csv")
+FORCING_CSV = Path(r"N:\arctic-xbeach-runs\database\era5.csv")   # written into every config (None = keep the path of the base config)
+STORM_CSV = Path(r"N:\arctic-xbeach-runs\database\storms.csv")   # idem
+XBEACH_EXE = None   # path of xbeach.exe written into every config (None = keep the base config's)
+
+N_TRIALS = 10          # completed trials the study should reach; a rerun on an existing study runs only the rest
+                       # (published study: 25 epochs x 8 workers = 200)
+N_PARALLEL = 8         # trials running at the same time (one child process each)
+SEED = 1               # seed of the TPE sampler (with N_PARALLEL > 1 the order in which trials finish still varies)
+START_PARAMS = None    # enqueue this parameter set as the first trial of a new study. Example: the published best (trial 88, value 4.1222)
+# START_PARAMS = dict(facua=0.018829910025755153, bedfriccoef=0.033501187112818874, wetslp=0.15233427680340267,
+#                     dryslp=0.5578092253749002, xb_threshold=2.012924093703792, lsgrad=0.0, N_thaw_threshold=3)
+
+# v1.1 solver options written into every config (thermal.* and data.*). Legacy values (nodal, per_mass, 0) select the v1.0 solver.
+SOLVER_OPTIONS = dict(conduction_form="flux", latent_heat_form="volumetric")
+ERA5_FLUX_SHIFT_HOURS = 1
+USE_SPINUP_STATE = True  # compute the spin-up once and let every trial load it
+
+# skill definition (published)
+SHORELINE_METHOD = "simple"
+SHORELINE_ELEVATION = +2.0   # [m]
+BLUFF_ELEVATION = 13.2       # [m]
+CALIB_START, CALIB_END = "2012-01-01", "2016-01-01"   # observations in this period enter the RMSE
+NORMALIZATION_DATE = "2012-07-11"                      # model and observations are matched at this date (offset removed)
+
+STUDY_NAME = "calibration_optuna"
+MAKE_FIGURE = True
+REMOVE_RESULTS_NC = True
+# === END CONFIGURATION ===
+
+import datetime
+import gc
+import json
+import os
+import shutil
+import subprocess
+import sys
+import threading
+import time
+import warnings
+
+import matplotlib
+matplotlib.use("Agg")  # non-interactive backend
+import matplotlib.pyplot as plt
+import numpy as np
+import optuna
+import pandas as pd
+import xarray as xr
+import yaml
+
+warnings.filterwarnings("ignore")
+
+# Optuna runs the n_jobs trials as threads of this process; HDF5 (netCDF4) and pyplot are not thread-safe, so the
+# post-processing of one trial at a time holds this lock (two reads at once gave "NetCDF: HDF error" in the thermal study).
+POSTPROC_LOCK = threading.Lock()
+
+# Parameter ranges [low, high]; low == high means fixed. facSk and facAs are set equal to facua when the config is written.
+PARAM_RANGES = {
+    "facua": [0.00, 0.40],
+    "bedfriccoef": [0.015, 0.035],
+    "wetslp": [0.05, 0.3],
+    "dryslp": [0.5, 1.0],
+    "xb_threshold": [2.0, 2.5],     # [m + MSL]; ranges from ~1 % (2.5) to ~5 % (2.0) of the time
+    "lsgrad": [0.0, 0.0],
+    "N_thaw_threshold": [3, 3],
+}
+
+CHILD_SCRIPT = """\
+from pathlib import Path
+import sys
+proj_dir = Path({repo!r})
+sys.path.insert(0, str(proj_dir))
+from main import main, Simulation
+import gc
+sim = Simulation({sim_dir!r}, proj_dir=proj_dir)
+main(sim, print_to_screen=False)
+gc.collect()
+"""
+
+
+# --- observations (published: read with geopandas, here plain pandas; same columns and casts) --------------------------
+def _read_positions(path: Path) -> pd.DataFrame:
+    df = pd.read_csv(path)
+    df["time"] = pd.to_datetime(df["time"])
+    df["distance_from_ref"] = df["distance_from_ref"].astype(np.float64)
+    return df.sort_values("time").reset_index(drop=True)
+
+
+DF_BE = _read_positions(BLUFF_EDGES_CSV)
+DF_SL = _read_positions(SHORELINES_CSV)
+_calib = lambda df: df[(df["time"] >= pd.Timestamp(CALIB_START)) & (df["time"] <= pd.Timestamp(CALIB_END))]
+DF_BE_CALIB, DF_SL_CALIB = _calib(DF_BE), _calib(DF_SL)
+NORM_DATE = pd.Timestamp(NORMALIZATION_DATE)
+
+
+# --- config handling -------------------------------------------------------------------------------------------------
+def apply_common_options(config: dict) -> dict:
+    """Solver options, forcing paths and executable shared by all runs (template, spin-up run, trials)."""
+    config["thermal"].update(SOLVER_OPTIONS)
+    config["data"]["era5_flux_shift_hours"] = ERA5_FLUX_SHIFT_HOURS
+    if FORCING_CSV is not None:
+        config["data"]["forcing_data_path"] = str(FORCING_CSV)
+    if STORM_CSV is not None:
+        config["data"]["storm_data_path"] = str(STORM_CSV)
+    if XBEACH_EXE is not None:
+        config["xbeach"]["version"] = str(XBEACH_EXE)
+    return config
+
+
+def update_config_yaml(sim_dir: Path, params: dict, extra_model: dict | None = None):
+    """Write the sampled XBeach / wrapper parameters (and extra model options) into config.yaml of a trial."""
+    config_path = sim_dir / "config.yaml"
+    config = yaml.safe_load(config_path.read_text())
+    clean = {}
+    for k, v in params.items():
+        clean[k] = int(v) if isinstance(v, np.integer) else float(v) if isinstance(v, np.floating) else v.tolist() if isinstance(v, np.ndarray) else v
+
+    config.setdefault("xbeach", {})
+    config.setdefault("wrapper", {})
+    for k, v in clean.items():
+        if k == "xb_threshold":
+            config["wrapper"][k] = v
+        elif k == "N_thaw_threshold":  # both sections, as in the published driver
+            config["wrapper"][k] = v
+            config["xbeach"][k] = v
+        else:
+            config["xbeach"][k] = v
+    if "facua" in clean:  # one friction value for all three factors
+        config["xbeach"]["facSk"] = clean["facua"]
+        config["xbeach"]["facAs"] = clean["facua"]
+    if extra_model:
+        config["model"].update(extra_model)
+    config_path.write_text(yaml.dump(config, default_flow_style=False))
+
+
+def prepare_template() -> Path:
+    """RUN_ROOT_DIR/template: BASE_SIM_DIR with the thermal section of step 1, the v1.1 options and the forcing paths."""
+    template = RUN_ROOT_DIR / "template"
+    if template.exists():
+        shutil.rmtree(template)
+    shutil.copytree(BASE_SIM_DIR, template)
+    config = yaml.safe_load((template / "config.yaml").read_text())
+    if THERMAL_CONFIG_YAML is not None:
+        config["thermal"] = yaml.safe_load(Path(THERMAL_CONFIG_YAML).read_text())["thermal"]
+    if THERMAL_DT is not None:
+        config["thermal"]["dt"] = THERMAL_DT  # after the replacement above, which brings the dt of the thermal calibration
+    apply_common_options(config)
+    (template / "config.yaml").write_text(yaml.dump(config, default_flow_style=False))
+    return template
+
+
+def launch(sim_dir: Path):
+    """Run main.py on sim_dir in a child process of the current interpreter."""
+    script = sim_dir / "run_simulation_subprocess.py"
+    script.write_text(CHILD_SCRIPT.format(repo=str(REPO_DIR), sim_dir=str(sim_dir)))
+    subprocess.run([sys.executable, str(script)], cwd=str(sim_dir))
+
+
+def ensure_spinup_state(template: Path) -> Path:
+    """Create RUN_ROOT_DIR/spinup_state.npz once (spin-up without XBeach). An existing file must match the template's thermal config."""
+    state = RUN_ROOT_DIR / "spinup_state.npz"
+    config = yaml.safe_load((template / "config.yaml").read_text())
+
+    if state.exists():
+        sys.path.insert(0, str(REPO_DIR))
+        from arctic_xbeach.model import Simulation
+        with np.load(state, allow_pickle=False) as z:
+            stored = json.loads(str(z["__meta__"]))["thermal_hash"]
+        if stored != Simulation.thermal_state_hash(config["thermal"]):
+            raise SystemExit(f"{state} was made with a different thermal config than the template. Delete it to recompute the spin-up.")
+        print(f"Using existing spin-up state {state}")
+        return state
+
+    spin_years = float(config["model"].get("spin_up_time", 0))
+    if spin_years <= 0:
+        raise SystemExit("model.spin_up_time is 0 in the template: nothing to save. Set USE_SPINUP_STATE = False.")
+    run_dir = RUN_ROOT_DIR / "_spinup"
+    if run_dir.exists():
+        shutil.rmtree(run_dir)
+    shutil.copytree(template, run_dir)
+    config["xbeach"]["with_xbeach"] = False                       # thermal only; the state is the thermal state on the initial bathymetry
+    config["output"]["output_res"] = 10**9                        # no hourly NetCDF output
+    end = pd.to_datetime(config["model"]["time_start"], dayfirst=True) + pd.Timedelta(days=spin_years * 365.25 + 2)
+    config["model"]["time_end"] = end.strftime("%d-%m-%Y")        # a little beyond the spin-up so that its last step is run
+    config["model"]["spinup_state_out"] = str(state)
+    (run_dir / "config.yaml").write_text(yaml.dump(config, default_flow_style=False))
+
+    print(f"Computing the spin-up once ({spin_years:g} years) -> {state}")
+    t0 = time.time()
+    launch(run_dir)
+    if not state.exists():
+        raise SystemExit(f"Spin-up run did not write {state}; see {run_dir / 'run.log'}")
+    print(f"Spin-up done in {(time.time() - t0) / 60:.1f} min")
+    return state
+
+
+# --- skill -----------------------------------------------------------------------------------------------------------
+def compute_rmse_mae(obs_vals, model_vals):
+    obs_vals, model_vals = np.array(obs_vals), np.array(model_vals)
+    return np.sqrt(np.mean((obs_vals - model_vals) ** 2)), np.mean(np.abs(obs_vals - model_vals))
+
+
+def find_shoreline(x, z, msl=0.0, method="simple"):
+    """x of the first crossing of z = msl (linear interpolation), NaN if there is none."""
+    if method != "simple":
+        raise ValueError(f"Unknown method: {method}")
+    crossings = np.where(np.diff(np.sign(z - msl)))[0]
+    if len(crossings) == 0:
+        return np.nan
+    i = crossings[0]
+    return x[i] + (msl - z[i]) * (x[i + 1] - x[i]) / (z[i + 1] - z[i])
+
+
+def find_bluff_edge(x, z, bluff_elevation=13.2):
+    """x of the first crossing of z = bluff_elevation, NaN if there is none."""
+    return find_shoreline(x, z, msl=bluff_elevation, method="simple")
+
+
+def run_simulation(sim_dir: Path) -> float:
+    """Run one trial in a child process and return the combined RMSE (inf if the run or the scoring failed)."""
+    launch(sim_dir)
+    print(f" => simulation finished: {sim_dir.name}")
+
+    nc_path = sim_dir / "results" / "results.nc"
+    try:
+        if not nc_path.exists():
+            print(f"  WARNING: results file not found: {nc_path}")
+            return float("inf")
+
+        with POSTPROC_LOCK:  # variables are loaded inside the lock (xarray reads lazily), the loop below then works on memory
+            with xr.open_dataset(nc_path, engine="netcdf4") as ds:
+                zb_xbeach, x_xbeach = ds["zb_xbeach"].load(), ds["xgr"].load()
+                time_datetime = pd.to_datetime(ds["time_xbeach"].values)
+        n_times = len(time_datetime)
+
+        shoreline_pos, bluff_pos = np.zeros(n_times), np.zeros(n_times)
+        for i in range(n_times):
+            zb, x = zb_xbeach.isel(time_xbeach=i).values, x_xbeach.values
+            valid = ~np.isnan(zb)
+            if valid.sum() > 2:
+                shoreline_pos[i] = find_shoreline(x[valid], zb[valid], msl=SHORELINE_ELEVATION, method=SHORELINE_METHOD)
+                bluff_pos[i] = find_bluff_edge(x[valid], zb[valid], bluff_elevation=BLUFF_ELEVATION)
+            else:
+                shoreline_pos[i] = bluff_pos[i] = np.nan
+
+        # 1-day centred smoothing
+        shoreline_pos = pd.Series(shoreline_pos, index=time_datetime).rolling(window="1D", center=True, min_periods=1).mean().values
+        bluff_pos = pd.Series(bluff_pos, index=time_datetime).rolling(window="1D", center=True, min_periods=1).mean().values
+
+        # normalise model and observations at the common anchor date
+        norm = NORM_DATE.value
+        model_t = time_datetime.values.astype("datetime64[ns]").astype(np.int64)
+        obs_be_at_norm = float(np.interp(norm, DF_BE["time"].values.astype("datetime64[ns]").astype(np.int64), DF_BE["distance_from_ref"].values))
+        obs_sl_at_norm = float(np.interp(norm, DF_SL["time"].values.astype("datetime64[ns]").astype(np.int64), DF_SL["distance_from_ref"].values))
+        bluff_offset = obs_be_at_norm - float(np.interp(norm, model_t, bluff_pos, left=bluff_pos[0], right=bluff_pos[-1]))
+        shore_offset = obs_sl_at_norm - float(np.interp(norm, model_t, shoreline_pos, left=shoreline_pos[0], right=shoreline_pos[-1]))
+        bluff_norm, shore_norm = bluff_pos + bluff_offset, shoreline_pos + shore_offset
+
+        be_t = DF_BE_CALIB["time"].values.astype("datetime64[ns]").astype(np.int64)
+        rmse_bluff, mae_bluff = compute_rmse_mae(DF_BE_CALIB["distance_from_ref"].values, np.interp(be_t, model_t, bluff_norm))
+        sl_t = DF_SL_CALIB["time"].values.astype("datetime64[ns]").astype(np.int64)
+        rmse_shore, mae_shore = compute_rmse_mae(DF_SL_CALIB["distance_from_ref"].values, np.interp(sl_t, model_t, shore_norm))
+
+        combined = np.sqrt((rmse_bluff**2 + rmse_shore**2) / 2) if not (np.isnan(rmse_bluff) or np.isnan(rmse_shore)) else np.nan
+
+        with open(sim_dir / "metrics.txt", "w", encoding="utf-8") as f:
+            f.write(f"Bluff Edge RMSE: {rmse_bluff:.4f} m\nBluff Edge MAE: {mae_bluff:.4f} m\n"
+                    f"Shoreline RMSE: {rmse_shore:.4f} m\nShoreline MAE: {mae_shore:.4f} m\n"
+                    f"Combined RMSE (sqrt((bluff^2+shore^2)/2)): {combined:.4f} m\n")
+
+        if MAKE_FIGURE:
+            with POSTPROC_LOCK:
+                fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(14, 10), sharex=True)
+                ax1.plot(time_datetime, bluff_norm, "b-", label="Model", lw=2)
+                ax1.plot(DF_BE_CALIB["time"], DF_BE_CALIB["distance_from_ref"], "ko", label="Observed", ms=6)
+                ax1.set_ylabel("Bluff edge position (m)", fontsize=12)
+                ax1.legend(loc="upper left")
+                ax1.grid(True, alpha=0.3)
+                ax1.text(0.98, 0.05, f"RMSE = {rmse_bluff:.2f} m, MAE = {mae_bluff:.2f} m", transform=ax1.transAxes, ha="right", fontsize=12)
+                ax2.plot(time_datetime, shore_norm, "r-", label="Model", lw=2)
+                ax2.plot(DF_SL_CALIB["time"], DF_SL_CALIB["distance_from_ref"], "ko", label="Observed", ms=6)
+                ax2.set_ylabel("Shoreline position (m)", fontsize=12)
+                ax2.set_xlabel("Time", fontsize=12)
+                ax2.legend(loc="upper left")
+                ax2.grid(True, alpha=0.3)
+                ax2.text(0.98, 0.05, f"RMSE = {rmse_shore:.2f} m, MAE = {mae_shore:.2f} m", transform=ax2.transAxes, ha="right", fontsize=12)
+                fig.tight_layout()
+                fig.savefig(sim_dir / "calibration_timeseries.png", dpi=300)
+                plt.close(fig)
+
+        gc.collect()
+        return combined
+
+    except Exception as e:
+        print(f"  ERROR processing results of {sim_dir.name}: {e}")
+        return float("inf")
+
+    finally:
+        if REMOVE_RESULTS_NC and nc_path.exists():
+            for _ in range(3):  # Windows can hold the file briefly
+                try:
+                    os.remove(str(nc_path))
+                    break
+                except PermissionError:
+                    time.sleep(0.5)
+                    gc.collect()
+                except Exception:
+                    break
+        gc.collect()
+
+
+SPINUP_STATE = None  # set in main()
+TEMPLATE = None
+
+
+def objective(trial: optuna.Trial) -> float:
+    params = {}
+    for k, v in PARAM_RANGES.items():
+        if isinstance(v[0], int) and isinstance(v[1], int):
+            params[k] = trial.suggest_int(k, int(v[0]), int(v[1]))
+        else:
+            params[k] = trial.suggest_float(k, float(v[0]), float(v[1]))
+
+    sim_dir = RUN_ROOT_DIR / f"optuna_trial_{trial.number:06d}"
+    if sim_dir.exists():
+        shutil.rmtree(sim_dir)
+    shutil.copytree(TEMPLATE, sim_dir)
+    update_config_yaml(sim_dir, params, extra_model={"spinup_state_in": str(SPINUP_STATE)} if SPINUP_STATE else None)
+
+    rmse = run_simulation(sim_dir)
+    trial.set_user_attr("sim_dir", str(sim_dir))
+    trial.set_user_attr("rmse", float(rmse))
+
+    try:
+        with open(RUN_ROOT_DIR / "calibration_prints.txt", "a", encoding="utf-8") as f:
+            f.write(f"Trial {trial.number} completed.\n  Parameters: {params}\n  RMSE: {rmse}\n  Simulation directory: {sim_dir}\n")
+    except Exception:
+        pass
+    return float(rmse)
+
+
+def main():
+    global SPINUP_STATE, TEMPLATE
+    RUN_ROOT_DIR.mkdir(parents=True, exist_ok=True)
+    print_log = RUN_ROOT_DIR / "calibration_prints.txt"
+    with open(print_log, "a", encoding="utf-8") as f:
+        f.write(f"Calibration run started: {datetime.datetime.now()}\n")
+
+    TEMPLATE = prepare_template()
+    if USE_SPINUP_STATE:
+        SPINUP_STATE = ensure_spinup_state(TEMPLATE)
+
+    study = optuna.create_study(  # load_if_exists: a rerun continues the study
+        study_name=STUDY_NAME, direction="minimize", load_if_exists=True,
+        storage=f"sqlite:///{(RUN_ROOT_DIR / 'optuna_study.db').as_posix()}",
+        sampler=optuna.samplers.TPESampler(seed=SEED),
+    )
+    if START_PARAMS is not None and len(study.trials) == 0:
+        study.enqueue_trial(START_PARAMS)  # first trial of a new study
+
+    n_complete = len(study.get_trials(deepcopy=False, states=(optuna.trial.TrialState.COMPLETE,)))
+    n_todo = max(N_TRIALS - n_complete, 0)
+    print(f"Study has {n_complete} completed trials; running {n_todo} more to reach {N_TRIALS}")
+    try:
+        study.optimize(objective, n_trials=n_todo, n_jobs=N_PARALLEL, callbacks=[lambda study, trial: gc.collect()])
+    except KeyboardInterrupt:
+        print("Optimization interrupted by user.")
+        with open(print_log, "a", encoding="utf-8") as f:
+            f.write("Optimization interrupted by user.\n")
+
+    try:
+        study.trials_dataframe().to_csv(RUN_ROOT_DIR / "calibration_results.csv", index=False)
+        best = study.best_trial
+        with open(print_log, "a", encoding="utf-8") as f:
+            f.write(f"\nCalibration finished: {datetime.datetime.now()}\nBest parameters found: {best.params}\n"
+                    f"Best trial number: {best.number}\nBest RMSE: {best.value}\n")
+        print("Best parameters found:", best.params)
+        print("Best trial number:", best.number)
+        print("Best RMSE:", best.value)
+
+        values = [t.value for t in study.trials if t.value is not None]
+        fig, ax = plt.subplots(figsize=(10, 5))
+        ax.plot(values, "b-", alpha=0.5, label="Trial RMSE")
+        ax.plot(pd.Series(values).cummin(), "r-", lw=2, label="Best RMSE")
+        ax.set_xlabel("Trial")
+        ax.set_ylabel("RMSE (m)")
+        ax.legend()
+        ax.grid(True)
+        fig.savefig(RUN_ROOT_DIR / "convergence.png", dpi=150)
+    except Exception as e:
+        print(f"No completed trials or failed to summarise the study: {e}")
+    gc.collect()
+
+
+if __name__ == "__main__":
+    main()

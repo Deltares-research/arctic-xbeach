@@ -1,0 +1,22 @@
+Stefan convergence, flux + volumetric options
+Analytical s(t_end = 30 d) = 0.53044 m (lambda = 0.285332)
+
+                 series   N     dz_m   dt_s  front_m  front_error_m  temp_rmse_K  front_diff_vs_smallest_dt_m  temp_rms_diff_vs_smallest_dt_K
+A: dt ~ dz^2 (Fo fixed)  50  0.16327 6663.2  0.56162       0.031175       0.1653                          NaN                             NaN
+A: dt ~ dz^2 (Fo fixed) 100 0.080808 1632.2  0.54038      0.0099351     0.055976                          NaN                             NaN
+A: dt ~ dz^2 (Fo fixed) 200 0.040201 403.99  0.53743      0.0069869     0.026256                          NaN                             NaN
+A: dt ~ dz^2 (Fo fixed) 400  0.02005  100.5  0.53343      0.0029927     0.010178                          NaN                             NaN
+A: dt ~ dz^2 (Fo fixed) 800 0.010013 25.063  0.53203      0.0015839     0.001556                          NaN                             NaN
+ B: fixed dz, dt varied 200 0.040201 646.38  0.53741      0.0069723      0.02625                  -3.4394e-05                      0.00019626
+ B: fixed dz, dt varied 200 0.040201 323.19  0.53743        0.00699     0.026258                  -1.6687e-05                      9.3138e-05
+ B: fixed dz, dt varied 200 0.040201 161.61  0.53744       0.007002     0.026262                  -4.6845e-06                      3.4834e-05
+ B: fixed dz, dt varied 200 0.040201 80.806  0.53745       0.007006     0.026265                  -6.8846e-07                      9.9988e-06
+ B: fixed dz, dt varied 200 0.040201 40.403  0.53745      0.0070067     0.026266                            0                               0
+
+Observed order of accuracy (successive pairs; least-squares slope)
+A  front error vs dz        : 1.63, 0.50, 1.22, 0.92; slope 1.03
+A  temperature RMSE vs dz   : 1.54, 1.08, 1.36, 2.70; slope 1.58
+B  front error vs dt        : -0.00, -0.00, -0.00, -0.00; slope -0.00   (spatial error floor at N = 200)
+B  temperature RMSE vs dt   : -0.00, -0.00, -0.00, -0.00; slope -0.00
+B  front self-convergence   : 1.04, 1.83, 2.77; slope 1.88   (vs smallest dt)
+B  T-RMS self-convergence   : 1.08, 1.42, 1.80; slope 1.43

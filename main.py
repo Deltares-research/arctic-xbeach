@@ -45,6 +45,9 @@ import gc
 from arctic_xbeach.model import Simulation
 from arctic_xbeach.bathymetry import generate_schematized_bathymetry
 from arctic_xbeach.miscellaneous import textbox, datetime_from_timestamp
+from arctic_xbeach.diagnostics import RunDiagnostics
+from arctic_xbeach.run_lock import acquire_run_lock, release_run_lock
+from arctic_xbeach.version import run_header
 
 # =============================================================================
 # LOGGING CONFIGURATION
@@ -86,7 +89,7 @@ def _setup_logging(level: str, run_id: str, log_file: Path | None):
 # =============================================================================
 # MAIN SIMULATION FUNCTION
 # =============================================================================
-def main(sim, print_to_screen=True):
+def _main(sim, print_to_screen=True):
     """Main simulation driver function.
     
     Orchestrates the complete Arctic-XBeach simulation including initialization,
@@ -105,9 +108,10 @@ def main(sim, print_to_screen=True):
     # =========================================================================
     setup_logger(sim, print_to_screen)
     t_start = time.time()
-    logger.info('Initializing Arctic-XBeach - working GitHub version')
-
     config = sim.config
+    for line in run_header(config):
+        logger.info(line)
+    logger.info('Initializing Arctic-XBeach')
     logger.debug("Successfully read configuration")
 
     # -------------------------------------------------------------------------
@@ -231,22 +235,48 @@ def main(sim, print_to_screen=True):
     # Get spin-up time in years (default 0)
     spinup_years    = getattr(sim.config.model, 'spin_up_time', 0)
     spinup_seconds  = spinup_years * 365.25 * 24 * 3600
+    n_spinup_steps  = sim.count_spinup_steps(spinup_seconds)  # timesteps without XBeach at the start of the run
+
+    # Run diagnostics: XBeach call log, wall-clock, conservation at grid updates (read-only, see arctic_xbeach/diagnostics.py)
+    diag = RunDiagnostics(
+        sim.result_dir, dt_hours=sim.dt, sea_ice_threshold=sim.config.wrapper.sea_ice_threshold, spinup_seconds=spinup_seconds,
+        log_calls=sim.config.output.get('log_xbeach_calls', True),
+        log_conservation=sim.config.output.get('log_conservation', True),
+    )
+    sim.diag = diag
+
+    # Optional spin-up save / restore (model.spinup_state_out / model.spinup_state_in, relative paths are relative to the run folder)
+    spinup_state_in  = sim.config.model.get('spinup_state_in')
+    spinup_state_out = sim.config.model.get('spinup_state_out')
+    resolve = lambda p: Path(p) if Path(p).is_absolute() else Path(sim.cwd) / p
+    start_id = 0
+    if spinup_state_in:
+        if spinup_state_out:
+            logger.warning("model.spinup_state_out is ignored because model.spinup_state_in is set")
+            spinup_state_out = None
+        start_id = sim.load_spinup_state(resolve(spinup_state_in), n_spinup_steps)
+        diag.spinup_restored = True
+        logger.info(f"Spin-up skipped: state restored from {resolve(spinup_state_in)}, continuing at timestep {start_id} "
+                    f"({sim.timestamps[start_id]})")
+    elif spinup_state_out and n_spinup_steps == 0:
+        logger.warning("model.spinup_state_out is set but the run has no spin-up (spin_up_time = 0), nothing will be saved")
+        spinup_state_out = None
     logger.info("Starting Arctic-XBeach")
 
     # =========================================================================
     # MAIN TIME LOOP
     # =========================================================================
     last_progress_info = -1
-    for timestep_id in np.arange(len(sim.T)):
-        
+    for timestep_id in np.arange(start_id, len(sim.T)):
+
         # ---------------------------------------------------------------------
         # Progress Tracking and Logging
         # ---------------------------------------------------------------------
         logger.debug(f"Timestep {timestep_id+1}/{len(sim.T)}")
 
-        if timestep_id > 0:
+        if timestep_id > start_id:
             elapsed = time.time() - t_start
-            avg_step_time = elapsed / timestep_id
+            avg_step_time = elapsed / (timestep_id - start_id)
             remaining_steps = len(sim.T) - (timestep_id + 1)
             eta_seconds = avg_step_time * remaining_steps
             progress_pct = int(((timestep_id + 1) / len(sim.T)) * 100)
@@ -278,16 +308,27 @@ def main(sim, print_to_screen=True):
 
         # Execute XBeach if conditions are met
         if sim.xbeach_times[timestep_id] and sim.config.xbeach.with_xbeach:
+            # call bookkeeping (diagnostics only): why XBeach runs here
+            call_id = diag.begin_call()
+            is_inter = bool(sim.xbeach_inter[timestep_id])
+            is_storm = bool(sim.xbeach_storms[timestep_id] * sim.xbeach_sea_ice[timestep_id])
+            reason = "both" if (is_inter and is_storm) else ("storm" if is_storm else "inter")
+            xbeach_times_value = float(sim.xbeach_times[timestep_id])
+
+            t_call = time.perf_counter()
             sim.write_ne_layer()
             sim.xbeach_setup(timestep_id)
+            setup_wall = time.perf_counter() - t_call
             logger.debug(f"Starting XBeach for timestep {sim.timestamps[timestep_id]}")
-            
+
+            t_call = time.perf_counter()
             run_successful = sim.start_xbeach(
                 os.path.join(sim.proj_dir, Path(sim.config.xbeach.version)),
                 sim.cwd,
                 timestep_id=timestep_id
             )
-            
+            xbeach_wall = time.perf_counter() - t_call
+
             # Verify XBeach created output file
             if run_successful:
                 destination_folder = os.path.join(
@@ -317,17 +358,36 @@ def main(sim, print_to_screen=True):
                     sim.xbeach_times[timestep_id + 1] = 0
             
             # Update grid with new morphology (only if XBeach succeeded)
+            grid_update_wall = 0.0
             if run_successful:
+                t_call = time.perf_counter()
                 sim.update_grid(timestep_id, fp_xbeach_output="xboutput.nc")
+                grid_update_wall = time.perf_counter() - t_call
             else:
                 logger.warning(f"Grid update skipped for timestep {timestep_id} - XBeach did not complete successfully")
+
+            diag.record_call(dict(
+                call_id=call_id, timestep_id=int(timestep_id), time=str(sim.timestamps[timestep_id]),
+                year=int(sim.timestamps[timestep_id].year), reason=reason, xbeach_times_value=xbeach_times_value,
+                hotstart=int(getattr(sim, "last_xbeach_hotstart", False)), sim_hours=sim.dt,
+                setup_wall_s=round(setup_wall, 4), xbeach_wall_s=round(xbeach_wall, 4),
+                grid_update_wall_s=round(grid_update_wall, 4), success=int(bool(run_successful)),
+            ))
 
         # ---------------------------------------------------------------------
         # Thermal Model Updates
         # ---------------------------------------------------------------------
+        t_thermal = time.perf_counter()
         for subgrid_timestep_id in np.arange(0, config.model.timestep * 3600, config.thermal.dt):
             sim.thermal_update(timestep_id, subgrid_timestep_id)
         sim.find_thaw_depth()
+        diag.add_thermal_time(time.perf_counter() - t_thermal, spinup=bool(timestep_id < n_spinup_steps))
+
+        # Save the thermal state at the end of the spin-up (no XBeach has run, so the bathymetry is still the initial one)
+        if spinup_state_out and timestep_id == n_spinup_steps - 1:
+            sim.save_spinup_state(resolve(spinup_state_out), n_spinup_steps)
+            logger.info(f"Spin-up state saved to {resolve(spinup_state_out)} (next timestep {n_spinup_steps}, "
+                        f"{sim.timestamps[n_spinup_steps] if n_spinup_steps < len(sim.timestamps) else 'end of run'})")
 
         # ---------------------------------------------------------------------
         # Output Generation
@@ -359,6 +419,14 @@ def main(sim, print_to_screen=True):
     logger.info(f"Total simulation time: {(time.time() - t_start) / 60:.1f} minutes")
     logger.info(f"Total simulation time: {(time.time() - t_start) / 3600:.1f} hours")
     
+    # Diagnostics summary (before cleanup, which deletes the forcing data)
+    try:
+        for line in diag.summary_lines(sim.timestamps, sim.forcing_data["sea_ice_cover"].values):
+            logger.info(line)
+    except Exception as e:  # diagnostics must never fail a finished run
+        logger.warning(f"Could not write the diagnostics summary: {e}")
+    diag.close()
+
     # Cleanup and finalization
     if sim.nc_writer is not None:
         sim.nc_writer.close()
@@ -366,6 +434,16 @@ def main(sim, print_to_screen=True):
     sim.cleanup()
 
     return sim.xgr, sim.zgr
+
+
+def main(sim, print_to_screen=True):
+    """Run the simulation (see _main) with the run folder locked, so a second run cannot start in it and overwrite
+    run.log and results.nc while this one is writing them (arctic_xbeach.run_lock)."""
+    lock = acquire_run_lock(sim.cwd)    # raises before anything in the folder is touched
+    try:
+        return _main(sim, print_to_screen)
+    finally:
+        release_run_lock(lock)
 
 
 # =============================================================================

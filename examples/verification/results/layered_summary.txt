@@ -1,0 +1,9 @@
+Layered-column verification (fixed end temperatures)
+3 layers k = [1.0, 3.0, 1.5] W/m/K, interfaces at [1.025, 2.525] m, N = 81 (dz = 0.050 m), dt = 300 s
+transient snapshot at 3 d vs fine-grid reference (1600 cells, matrix exponential); steady state after 300 d vs analytical
+
+scheme  comparison              RMSE [K] max |diff| [K]
+nodal   transient snapshot        0.1434         0.4014
+nodal   steady state              0.6722         1.4946
+flux    transient snapshot        0.0011         0.0070
+flux    steady state              0.0000         0.0000

@@ -1,0 +1,12 @@
+Stefan (two-phase Neumann) verification
+N = 200 nodes over 8.0 m (dz = 0.0402 m), dt = 404.0 s (Fo = 0.25), t_end = 30 d
+k_f = 2.0, k_u = 1.0 W/m/K; C_f = 2.00e+06, C_u = 3.00e+06 J/m3/K
+T_init = -5.0 C, T_surface = +10.0 C; nb = 0.4, rho_soil = 1990, L = 334000 J/kg
+Analytical lambda = 0.285332; s(t_end) = 0.5304 m
+Analytical s(t_end) if latent heat were rho_soil*L*nb (what per_mass solves): 0.3976 m
+
+variant             s(t_end) [m]    diff [m]   diff [%]  max |diff|/s (t>=t_end/10) [%]
+legacy                    0.4994     -0.0311      -5.86                            6.42
+flux_only                 0.4036     -0.1269     -23.92                           23.94
+volumetric_only           0.6690      0.1386      26.12                           27.22
+flux_volumetric           0.5374      0.0070       1.32                            4.11

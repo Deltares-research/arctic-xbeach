@@ -33,10 +33,14 @@ import math
 import numpy as np
 import pandas as pd
 from shapely.geometry import LineString
+from arctic_xbeach.version import __version__, git_revision, options_summary
 from scipy.interpolate import interp1d
 import xarray as xr
 from netCDF4 import Dataset
 import arctic_xbeach.miscellaneous as um
+import arctic_xbeach.diagnostics as dg
+import hashlib
+import json
 import subprocess
 import matplotlib.pyplot as plt
 import logging
@@ -76,6 +80,9 @@ class Simulation():
             - write_output(): Save results to NetCDF
     """
     
+    # Run diagnostics collector (arctic_xbeach.diagnostics.RunDiagnostics), set by main(); None = no diagnostics.
+    diag = None
+
     # =========================================================================
     # INITIALIZATION AND SETUP
     # =========================================================================
@@ -201,8 +208,18 @@ class Simulation():
         # Create time indexing array for numerical model
         self.T = np.arange(0, len(self.timestamps), 1) 
         
-        # Define output timing
+        # Define output timing. Optional output.output_start / output.output_end (dates, as model.time_start) limit the
+        # output to a window, e.g. the observation period of a thermal calibration; the default is the whole run.
         self.temp_output_ids = np.arange(0, len(self.timestamps), self.config.output.output_res)
+        out_start, out_end = self.config.output.get('output_start'), self.config.output.get('output_end')
+        if out_start is not None or out_end is not None:
+            t_out = self.timestamps[self.temp_output_ids]
+            keep = np.ones(len(t_out), dtype=bool)
+            if out_start is not None:
+                keep &= t_out >= pd.to_datetime(out_start, dayfirst=True)
+            if out_end is not None:
+                keep &= t_out < pd.to_datetime(out_end, dayfirst=True)
+            self.temp_output_ids = self.temp_output_ids[keep]
 
     # -------------------------------------------------------------------------
     # Grid and Bathymetry Setup
@@ -290,7 +307,11 @@ class Simulation():
             fpath (str): Path to forcing data file
         """
         # Read in forcing conditions
-        self.forcing_data = self._get_timeseries(self.t_start, self.t_end, fpath)
+        # data.era5_flux_shift_hours: 0 = no shift (flux label applied as given), 1 = shift to the start of the ERA5 averaging hour
+        self.forcing_data = self._get_timeseries(
+            self.t_start, self.t_end, fpath,
+            flux_shift_hours=self.config.data.get('era5_flux_shift_hours', 0)
+            )
         
         # Check if conceptual mode is enabled
         use_conceptual = getattr(self.config.data, 'conceptual', False)
@@ -340,6 +361,7 @@ class Simulation():
         out_nc = os.path.join(self.result_dir, "results.nc")
         tstart_str = str(self.timestamps[0])
         self.nc_writer = NCAppender(out_nc, self.xgr, depth_id, xgr_xb.astype("f4"), tstart=tstart_str)
+        self.nc_writer.ds.setncattr("Solver", options_summary(self.config))
         self._t0_seconds = float((self.timestamps[0] - pd.Timestamp(self.timestamps[0])) / pd.Timedelta("1s"))
 
     
@@ -790,6 +812,7 @@ class Simulation():
         
         # Configure hotstart
         writehotstart = 1 if timestep_id + 1 < len(self.xbeach_times) else 0
+        self.last_xbeach_hotstart = bool(self.xbeach_times[timestep_id - 1] and self.xbeach_storms[timestep_id - 1] and timestep_id != 0)  # for the call log
         hotstart_text = [
             "%% hotstart (during a storm, use the previous xbeach timestep as hotstart for current timestep)\n\n",
             f"writehotstart  = {writehotstart}\n",
@@ -923,6 +946,14 @@ class Simulation():
         
         return None
         
+    def _forcing_row(self, timestep_id):
+        """Forcing of one timestep as a dict, cached: the thermal substeps of a timestep all ask for the same row, and a pandas
+        row lookup per substep took about a third of the run time of a thermal-only run. Same values as forcing_data.iloc."""
+        if getattr(self, '_forcing_row_id', None) != timestep_id:
+            self._forcing_row_cache = self.forcing_data.iloc[timestep_id].to_dict()
+            self._forcing_row_id = timestep_id
+        return self._forcing_row_cache
+
     def _get_wind_conditions(self, timestep_id):
         """This function gets the wind conditions from the forcing dataset. Wind direction is defined in degrees
         clockwise from the north (i.e., east = 90 degrees)
@@ -933,7 +964,7 @@ class Simulation():
         Returns:
             tuple: (wind_direction, wind_velocity)
         """
-        row = self.forcing_data.iloc[timestep_id]
+        row = self._forcing_row(timestep_id)
         
         u = row["10m_u_component_of_wind"]
         v = row["10m_v_component_of_wind"]
@@ -1002,14 +1033,9 @@ class Simulation():
         # define soil properties (k, density, nb, Cs & Cl)
         self.define_soil_property_matrices(len(self.xgr), define_nb=True)
             
-        self.enthalpy_matrix = \
-            frozen_mask * \
-                self.Cs_matrix * self.temp_matrix + \
-            unfrozen_mask * \
-                (self.Cl_matrix * self.temp_matrix + \
-                (self.Cs_matrix - self.Cl_matrix) * self.config.thermal.T_melt + \
-                self.config.thermal.L_water_ice * self.nb_matrix)  # unit of L_water_ice is already corrected to use water density
-        
+        # (latent heat term depends on thermal.latent_heat_form, see define_soil_property_matrices)
+        self.enthalpy_matrix = self._enthalpy_from_temperature(self.temp_matrix)
+
         # calculate the courant-friedlichs-lewy number matrix
         self.k_matrix = frozen_mask * self.k_frozen_matrix + unfrozen_mask * self.k_unfrozen_matrix
         self.cfl_matrix = self.k_matrix / self.soil_density_matrix * self.config.thermal.dt / self.dz**2
@@ -1089,8 +1115,42 @@ class Simulation():
         # heat balance equation. Enthalpy formulation from Ravens et al. (2023).
         self.Cs_matrix = self.config.thermal.c_soil_frozen / self.soil_density_matrix
         self.Cl_matrix = self.config.thermal.c_soil_unfrozen / self.soil_density_matrix
-        
+
+        # latent heat of fusion in the same unit as the enthalpy (J per kg of soil), see _latent_heat_matrix
+        self.latent_matrix = self._latent_heat_matrix(self.nb_matrix, self.soil_density_matrix)
+
         return None
+
+    def _get_option(self, name, default, allowed):
+        """Read a string option from config.thermal and validate it. The default is the legacy (v1.0) form."""
+        value = self.config.thermal.get(name, default)
+        if value not in allowed:
+            raise ValueError(f"thermal.{name} must be one of {allowed}, got {value!r}")
+        return value
+
+    def _latent_heat_matrix(self, nb, rho_soil):
+        """Latent heat of fusion per kg of soil [J/kg] for (saturated) porosity nb and soil density rho_soil.
+
+        The enthalpy is stored per unit mass of soil (Cs = C_frozen / rho_soil), so the latent term is too:
+            per_mass   (v1.0, legacy): L * nb, i.e. a volumetric latent heat of rho_soil * L * nb.
+            volumetric               : L * nb * rho_water / rho_soil, i.e. a volumetric latent heat of rho_water * L * nb.
+        L_water_ice is in J/kg of water in both cases.
+        """
+        form = self._get_option('latent_heat_form', 'per_mass', ('per_mass', 'volumetric'))
+        L = self.config.thermal.L_water_ice
+        if form == 'volumetric':
+            return L * nb * self.config.thermal.rho_water / rho_soil
+        return L * nb
+
+    def _enthalpy_from_temperature(self, temp_matrix):
+        """Enthalpy [J/kg soil] of a temperature matrix, using the current Cs, Cl and latent matrices.
+        T <= T_melt is frozen, T > T_melt is fully thawed (the latent heat is added in full)."""
+        T_melt = self.config.thermal.T_melt
+        frozen_mask = (temp_matrix <= T_melt)
+        unfrozen_mask = np.ones(frozen_mask.shape) - frozen_mask
+        return \
+            frozen_mask * self.Cs_matrix * temp_matrix + \
+            unfrozen_mask * (self.Cl_matrix * temp_matrix + (self.Cs_matrix - self.Cl_matrix) * T_melt + self.latent_matrix)
     
     @classmethod
     def _compute_nb_distr(self, nb_max, nb_min, nb_max_depth, nb_min_depth, N, max_depth):
@@ -1188,42 +1248,87 @@ class Simulation():
             inbetween_mask * ((self.k_frozen_matrix + self.k_unfrozen_matrix) / 2) + \
             unfrozen_mask * self.k_unfrozen_matrix
         
-        # get the new boundary condition
+        # get the new boundary condition (this also sets self.heat_flux, the net surface heat flux into the ground)
         self.ghost_nodes_temperature = self._get_ghost_node_boundary_condition(timestep_id, subgrid_timestep_id)
         self.bottom_boundary_temperature = self._get_bottom_boundary_temperature()
-                
-        # aggregate temperature matrix
-        aggregated_temp_matrix = np.concatenate((
-            self.ghost_nodes_temperature.reshape(len(self.xgr), 1),
-            self.temp_matrix,
-            self.bottom_boundary_temperature.reshape(len(self.xgr), 1)
-            ), axis=1) 
-        
-        # determine the courant-friedlichs-lewy number matrix
+
         dt = self.config.thermal.dt
-        update_coeff = self.k_matrix / self.soil_density_matrix * dt / self.dz**2
-        
-        # Verify stability using proper Fourier number
+        if self.diag is not None:  # diagnostics only: net surface heat exchange integrated over the transect, per calendar year
+            if subgrid_timestep_id == 0 or self.diag.current_year is None:
+                self.diag.current_year = int(self.timestamps[timestep_id].year)
+            self.diag.add_surface_exchange(self.heat_flux, self._surface_weights(), dt)
+        conduction_form = self._get_option('conduction_form', 'nodal', ('nodal', 'flux'))
+
+        # volumetric heat capacity per node (only used for the stability check below)
         Cvol_matrix = (
             frozen_mask * self.config.thermal.c_soil_frozen +
-            inbetween_mask * 0.5 * (self.config.thermal.c_soil_frozen + 
+            inbetween_mask * 0.5 * (self.config.thermal.c_soil_frozen +
                                     self.config.thermal.c_soil_unfrozen) +
             unfrozen_mask * self.config.thermal.c_soil_unfrozen
         )
-        Fo_matrix = (self.k_matrix / Cvol_matrix) * (dt / self.dz**2)
-        Fo_max = float(np.nanmax(Fo_matrix))
-        
+
+        if conduction_form == 'nodal':
+            # v1.0 (legacy): nodal k times the second difference of T, i.e. k d2T/dz2. Not conservative for k = k(z, phase).
+            aggregated_temp_matrix = np.concatenate((
+                self.ghost_nodes_temperature.reshape(len(self.xgr), 1),
+                self.temp_matrix,
+                self.bottom_boundary_temperature.reshape(len(self.xgr), 1)
+                ), axis=1)
+            update_coeff = self.k_matrix / self.soil_density_matrix * dt / self.dz**2
+
+            # Verify stability using the Fourier number
+            Fo_matrix = (self.k_matrix / Cvol_matrix) * (dt / self.dz**2)
+            Fo_max = float(np.nanmax(Fo_matrix))
+
+            # get the new enthalpy matrix
+            laplacian_T = aggregated_temp_matrix @ self.A_matrix
+            self.enthalpy_matrix = self.enthalpy_matrix + update_coeff * laplacian_T
+
+        else:
+            # Conservative finite-volume form d/dz(k dT/dz) with harmonic-mean conductivity on the cell faces.
+            # Node i owns the cell [z_i - dz/2, z_i + dz/2]; the surface and bottom nodes own half cells (thickness dz/2).
+            # Boundary conditions are the same physical ones as in the nodal form (the ghost-node construction of
+            # _get_ghost_node_boundary_condition is equivalent to these fluxes for ghost_node_order = 2):
+            #   top   : net surface heat flux self.heat_flux [W/m2] into the ground
+            #   bottom: geothermal heat flux k * geothermal_gradient [W/m2] from below
+            T = self.temp_matrix
+            k = self.k_matrix
+            k_face = 2 * k[:, :-1] * k[:, 1:] / (k[:, :-1] + k[:, 1:])  # harmonic mean, shape (N, nz-1)
+            F = k_face * (T[:, 1:] - T[:, :-1]) / self.dz  # [W/m2] heat flowing upward through face i+1/2 into node i
+
+            rate = np.empty_like(T)  # volumetric heating rate [W/m3]
+            rate[:, 1:-1] = (F[:, 1:] - F[:, :-1]) / self.dz
+            rate[:, 0] = 2 * (self.heat_flux + F[:, 0]) / self.dz
+            rate[:, -1] = 2 * (k[:, -1] * self.config.thermal.geothermal_gradient - F[:, -1]) / self.dz
+
+            # stored quantity is per unit mass of soil, so divide by the node's soil density
+            self.enthalpy_matrix = self.enthalpy_matrix + dt * rate / self.soil_density_matrix
+
+            # Fourier number of the explicit scheme: sum of the two face conductivities over the node's heat capacity
+            k_face_pad = np.concatenate((k_face[:, :1], k_face, k_face[:, -1:]), axis=1)
+            Fo_matrix = (k_face_pad[:, :-1] + k_face_pad[:, 1:]) / (2 * Cvol_matrix) * (dt / self.dz**2)
+            Fo_max = float(np.nanmax(Fo_matrix))
+
         if Fo_max > 0.5:
-            max_stable_dt = 0.5 * self.dz**2 / np.nanmax(self.k_matrix / Cvol_matrix)
             raise ValueError(
                 f"Thermal timestep too large: max(Fo) = {Fo_max:.3f} > 0.5. "
-                f"Reduce dt to <= {max_stable_dt:.3e} s"
+                f"Reduce dt to <= {0.5 * dt / Fo_max:.3e} s"
             )
-            
-        # get the new enthalpy matrix
-        laplacian_T = aggregated_temp_matrix @ self.A_matrix
-        self.enthalpy_matrix = self.enthalpy_matrix + update_coeff * laplacian_T
-        
+
+        # A wet surface node (half cell) also gets the explicit convective flux hc * (T_sea - T_0), which adds
+        # 2 hc dt / (C dz) to the conduction coefficient 2 Fo of that node. The sum must stay below 2 or the node rings.
+        wet_mask = getattr(self, 'wet_mask', None)  # not set by subclasses that override the boundary condition
+        if wet_mask is not None and wet_mask.any():
+            wet = wet_mask.astype(bool)
+            coeff_wet = (2 * self.k_matrix[wet, 0] / Cvol_matrix[wet, 0] * dt / self.dz**2
+                         + 2 * self.hc_water * dt / (Cvol_matrix[wet, 0] * self.dz))
+            coeff_max = float(np.nanmax(coeff_wet))
+            if coeff_max >= 2:
+                raise ValueError(
+                    f"Thermal timestep too large for the wet surface node: 2 Fo + 2 hc dt / (C dz) = {coeff_max:.3f} >= 2. "
+                    f"Reduce dt to <= {2 * dt / coeff_max:.3e} s"
+                )
+
         return None
     
     def _get_phase_masks(self):
@@ -1234,7 +1339,7 @@ class Simulation():
         unfrozen_mask = (self.enthalpy_matrix) > (
             self.config.thermal.T_melt * self.Cl_matrix + \
             (self.Cs_matrix - self.Cl_matrix) * self.config.thermal.T_melt + \
-            self.config.thermal.L_water_ice * self.nb_matrix
+            self.latent_matrix
             )
         
         inbetween_mask = np.ones(frozen_mask.shape) - frozen_mask - unfrozen_mask
@@ -1251,7 +1356,7 @@ class Simulation():
             unfrozen_mask * \
                 (self.enthalpy_matrix - \
                 (self.Cs_matrix - self.Cl_matrix) * self.config.thermal.T_melt - \
-                self.config.thermal.L_water_ice * self.nb_matrix) / \
+                self.latent_matrix) / \
                     (self.Cl_matrix)
                     
         return temp_matrix
@@ -1267,7 +1372,7 @@ class Simulation():
             array: temperature values for the ghost nodes.
         """
         # first get the correct forcing timestep
-        row = self.forcing_data.iloc[timestep_id]
+        row = self._forcing_row(timestep_id)
         
         # with associated forcing values
         self.current_air_temp = row["2m_temperature"]  # also used in output
@@ -1334,8 +1439,13 @@ class Simulation():
         self.convective_flux = dry_mask * convective_transport_air + wet_mask * convective_transport_water  # also used in output
         
         # multiply convective heat flux with factor for sensitivity analysis
-        self.convective_flux = self.convective_flux * (1 if "sensitivity" not in self.config.keys() else self.config.sensitivity.factor_convective_heat_flux)
-        
+        convective_factor = 1 if "sensitivity" not in self.config.keys() else self.config.sensitivity.factor_convective_heat_flux
+        self.convective_flux = self.convective_flux * convective_factor
+
+        # kept for the explicit stability check of the wet surface node in thermal_update
+        self.wet_mask = wet_mask
+        self.hc_water = hc * convective_factor
+
         if subgrid_timestep_id == 0:  # determine radiation fluxes only during first subgrid timestep, as they are constant for each subgrid timestep
         
             # Check if conceptual mode is enabled - if so, disable all radiation
@@ -1633,7 +1743,11 @@ class Simulation():
         
         # update bed level
         bathy_current = self.zgr + cum_sedero
-        
+
+        # diagnostics only: remember the thermal state before the regrid (nothing below depends on it)
+        log_conservation = self.diag is not None and self.diag.log_conservation
+        snapshot = self._snapshot_for_conservation() if (log_conservation and not all(cum_sedero == 0)) else None
+
         # only update the grid of there actually was a change in bed level
         if not all(cum_sedero == 0):
                         
@@ -1681,7 +1795,8 @@ class Simulation():
                 if (self.current_sea_temp <= self.config.thermal.T_melt):
                     enthalpy_submerged_sediment = self.current_sea_temp * Cs_value
                 else:
-                    enthalpy_submerged_sediment = self.current_sea_temp * Cl_value + (Cs_value - Cl_value) * self.config.thermal.T_melt + self.config.thermal.L_water_ice * self.config.thermal.nb_max
+                    enthalpy_submerged_sediment = self.current_sea_temp * Cl_value + (Cs_value - Cl_value) * self.config.thermal.T_melt + \
+                        self._latent_heat_matrix(self.config.thermal.nb_max, rho_value)
                 
                 # get current water level
                 self.water_level = (self._update_water_level(timestep_id))
@@ -1725,10 +1840,87 @@ class Simulation():
             
             # update the angles
             self._update_angles()
-        
+
+        if log_conservation:
+            try:
+                self._log_regrid_conservation(timestep_id, snapshot, cum_sedero)
+            except Exception as e:  # diagnostics must never stop a run
+                logger.warning(f"Conservation diagnostics failed at timestep {timestep_id}: {e}")
+
         return None
-        
-        
+
+    def _surface_weights(self):
+        """Surface arc length owned by each node [m] (cached per grid), used to integrate over the transect."""
+        cache = getattr(self, "_ds_cache", None)
+        if cache is None or cache[0] is not self.zgr or cache[1] is not self.xgr:
+            cache = (self.zgr, self.xgr, dg.arc_length_weights(self.xgr, self.zgr))
+            self._ds_cache = cache
+        return cache[2]
+
+    def _snapshot_for_conservation(self):
+        """Copy of everything the heat budget of a regrid needs from the state before the regrid."""
+        return dict(
+            abs_xgr=self.abs_xgr.copy(), abs_zgr=self.abs_zgr.copy(), H=self.enthalpy_matrix.copy(),
+            rho=self.soil_density_matrix.copy(), Cs=self.Cs_matrix.copy(),
+        )
+
+    def _log_regrid_conservation(self, timestep_id, snap, cum_sedero):
+        """Diagnostics only: stored heat (split into material / geometry / interpolation) and sediment budget of one
+        grid update. Writes one row of conservation_log.csv. Does not modify the model state."""
+        def trapz(y, x):
+            y, x = np.asarray(y, dtype=float), np.asarray(x, dtype=float)
+            return float(np.sum(0.5 * (y[1:] + y[:-1]) * np.diff(x))) if len(x) > 1 else 0.0
+
+        regridded = snap is not None
+        row = dict(call_id=self.diag.call_id, timestep_id=int(timestep_id), time=str(self.timestamps[timestep_id]),
+                   regridded=int(regridded))
+
+        # --- sediment budget [m3 per m alongshore]: XBeach raw output vs what the thermal grid was given
+        raw = getattr(self, "_xb_raw", None)
+        if raw is not None:
+            row["vol_xb_net"] = trapz(raw["sedero"], raw["x"])
+            row["vol_xb_eroded"] = trapz(np.maximum(-raw["sedero"], 0), raw["x"])
+            row["vol_xb_deposited"] = trapz(np.maximum(raw["sedero"], 0), raw["x"])
+            row["vol_xb_zbdiff"] = trapz(raw["zb1"] - raw["zb0"], raw["x"]) if raw["zb0"] is not None else np.nan
+        # (cum_sedero is on the old thermal x grid, which does not change in a regrid)
+        row["vol_grid_net"] = trapz(cum_sedero, self.xgr)
+        row["vol_grid_eroded"] = trapz(np.maximum(-cum_sedero, 0), self.xgr)
+        row["vol_grid_deposited"] = trapz(np.maximum(cum_sedero, 0), self.xgr)
+        row["vol_grid_minus_xb"] = row["vol_grid_net"] - row.get("vol_xb_net", np.nan)
+
+        # --- stored heat of the thermal columns [J per m alongshore], relative to soil frozen at T_melt
+        if regridded:
+            T_melt, dz = self.config.thermal.T_melt, self.dz
+            wx = dg.x_weights(self.xgr)  # the x grid does not change in a regrid
+            cols_before = dg.column_energy(snap["H"], snap["rho"], snap["Cs"], T_melt, snap["abs_zgr"])
+            cols_after = dg.column_energy(self.enthalpy_matrix, self.soil_density_matrix, self.Cs_matrix, T_melt, self.abs_zgr)
+            row["E_before"] = float((cols_before * wx).sum())
+            row["E_after"] = float((cols_after * wx).sum())
+            row["dE"] = row["E_after"] - row["E_before"]
+            if self.config.thermal.grid_interpolation == "linear_interp_z":
+                m = dg.regrid_node_masks(snap["abs_xgr"], snap["abs_zgr"], self.abs_xgr, self.abs_zgr)
+                e_old = snap["rho"] * (snap["H"] - snap["Cs"] * T_melt)
+                e_new = self.soil_density_matrix * (self.enthalpy_matrix - self.Cs_matrix * T_melt)
+                mat = dg.material_heat(snap["abs_zgr"], e_old, self.abs_zgr, e_new)
+                for key, name in (("E_added_top", "added_top"), ("E_added_bottom", "added_bottom"),
+                                  ("E_removed_top", "removed_top"), ("E_removed_bottom", "removed_bottom")):
+                    row[key] = float((mat[name] * wx).sum())
+                row["dE_material"] = row["E_added_top"] + row["E_added_bottom"] - row["E_removed_top"] - row["E_removed_bottom"]
+                row["dE_interp"] = row["dE"] - row["dE_material"]
+                row["interp_pct_of_E_before"] = 100 * row["dE_interp"] / abs(row["E_before"]) if row["E_before"] else np.nan
+                row["n_filled_top_nodes"] = int(m["filled_top"].sum())
+                row["n_filled_bottom_nodes"] = int(m["filled_bottom"].sum())
+                row["n_removed_top_nodes"] = int(m["removed_top"].sum())
+                row["n_removed_bottom_nodes"] = int(m["removed_bottom"].sum())
+                # discrete thickness of the filled / removed cover: nodes * vertical node spacing * width of the node
+                dzv_new, dzv_old = self.abs_zgr[:, 0] - self.abs_zgr[:, 1], snap["abs_zgr"][:, 0] - snap["abs_zgr"][:, 1]
+                row["vol_nodes_fill_top"] = float((m["filled_top"].sum(axis=1) * dzv_new * wx).sum())
+                row["vol_nodes_removed_top"] = float((m["removed_top"].sum(axis=1) * dzv_old * wx).sum())
+        else:
+            for key in ("dE", "dE_material", "dE_interp"):
+                row[key] = 0.0
+        self.diag.record_conservation(row)
+
     def _update_angles(self):
         """This function geneartes an array of local angles (in radians) for the grid, based on the central differences method.
         """
@@ -1754,13 +1946,24 @@ class Simulation():
             return np.zeros(self.xgr.shape)
             
         # Read output file
+        self._xb_raw = None
         try:
             ds = xr.load_dataset(abs_path)
+            zb_first = zb_last = None
+            if self.diag is not None:  # diagnostics only: bed at first and last output time for the sediment budget
+                try:
+                    zb_first = ds.zb.isel(globaltime=0).squeeze().values.astype(float)
+                    zb_last = ds.zb.isel(globaltime=-1).squeeze().values.astype(float)
+                except Exception:
+                    zb_first = zb_last = None
             ds = ds.sel(globaltime = np.max(ds.globaltime.values)).squeeze()
-            
+
             cum_sedero = ds.sedero.values
             xgr = ds.x.values
-            
+            if self.diag is not None:
+                self._xb_raw = dict(x=np.asarray(xgr, dtype=float).copy(), sedero=np.asarray(cum_sedero, dtype=float).copy(),
+                                    zb0=zb_first, zb1=zb_last)
+
             ds.close()
         except FileNotFoundError as e:
             logger.error(f"File disappeared during read operation: {abs_path}")
@@ -1997,6 +2200,124 @@ class Simulation():
     ##                                            ##
     ################################################
         
+    ################################################
+    ##                                            ##
+    ##          # SPIN-UP SAVE / RESTORE          ##
+    ##                                            ##
+    ################################################
+    # XBeach does not run during the spin-up, so the state at the end of the spin-up is the thermal state on the
+    # unchanged initial bathymetry. It is saved to one .npz file (model.spinup_state_out) and can replace the spin-up in
+    # later runs (model.spinup_state_in), e.g. all trials of a coupled calibration.
+    SPINUP_STATE_VERSION = 1
+    _SPINUP_ARRAYS = (
+        "enthalpy_matrix", "temp_matrix", "k_matrix", "ghost_nodes_temperature", "bottom_boundary_temperature",
+        "nb_matrix", "soil_density_matrix", "Cs_matrix", "Cl_matrix", "latent_matrix", "k_frozen_matrix", "k_unfrozen_matrix",
+        "xgr", "zgr", "abs_xgr", "abs_zgr", "angles", "thaw_depth",
+        "convective_flux", "heat_flux", "latent_flux", "lw_flux", "sw_flux", "constant_flux", "factors", "heat_flux_factors",
+    )
+    _SPINUP_SCALARS = (
+        "water_level", "current_air_temp", "current_sea_temp", "current_sea_ice", "wind_direction", "wind_velocity",
+    )
+
+    def count_spinup_steps(self, spinup_seconds):
+        """Number of leading timesteps that belong to the spin-up (same criterion as the main loop)."""
+        elapsed = np.asarray((self.timestamps - self.timestamps[0]) / pd.Timedelta("1s"))
+        return int(np.sum(elapsed < spinup_seconds))
+
+    @staticmethod
+    def _hash_json(obj):
+        return hashlib.sha256(json.dumps(obj, sort_keys=True, default=str).encode("utf-8")).hexdigest()
+
+    @staticmethod
+    def _normalised_thermal(thermal):
+        """Thermal config as a plain dict with the effective value of every option that has a default."""
+        thermal = dict(thermal)
+        for key, default in (("conduction_form", "nodal"), ("latent_heat_form", "per_mass"), ("ghost_node_order", 2)):
+            thermal.setdefault(key, default)
+        return thermal
+
+    @classmethod
+    def thermal_state_hash(cls, thermal):
+        """Hash of a thermal config section as stored in a spin-up state file (for checks before a run is started)."""
+        return cls._hash_json(cls._normalised_thermal(thermal))
+
+    def _spinup_fingerprint(self, n_spin):
+        """What the spin-up state depends on: the thermal config (hashed, effective values of the options that have a
+        default), the run context (start time, spin-up length, timestep, forcing options) and the forcing used."""
+        thermal = self._normalised_thermal(self.config.thermal)
+        context = dict(
+            time_start=str(self.t_start), timestep_hours=self.dt, n_spinup_steps=int(n_spin),
+            era5_flux_shift_hours=self.config.data.get("era5_flux_shift_hours", 0),
+            conceptual={k: self.config.data.get(k) for k in ("conceptual", "conceptual_temp", "conceptual_ini", "conceptual_flux")},
+            sensitivity=dict(self.config.sensitivity) if "sensitivity" in self.config else None,
+        )
+        forcing = np.ascontiguousarray(self.forcing_data.iloc[:n_spin].select_dtypes("number").to_numpy(dtype=float))
+        return thermal, context, hashlib.sha256(forcing.tobytes()).hexdigest()
+
+    def save_spinup_state(self, path, n_spin):
+        """Save the model state at the end of the spin-up (call after the last spin-up timestep, n_spin = number of
+        spin-up timesteps). Everything needed to continue bit-identically at timestep n_spin goes into one npz file."""
+        path = Path(path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        arrays = {n: np.asarray(getattr(self, n)) for n in self._SPINUP_ARRAYS if hasattr(self, n)}
+        scalars = {n: float(getattr(self, n)) for n in self._SPINUP_SCALARS if hasattr(self, n)}
+        thermal, context, forcing_hash = self._spinup_fingerprint(n_spin)
+        meta = dict(
+            version=self.SPINUP_STATE_VERSION, n_spinup_steps=int(n_spin),
+            next_timestamp=str(self.timestamps[n_spin]) if n_spin < len(self.timestamps) else None,
+            thermal=thermal, thermal_hash=self._hash_json(thermal),
+            context=context, context_hash=self._hash_json(context), forcing_hash=forcing_hash,
+            arrays=list(arrays), scalars=scalars,
+        )
+        tmp = path.with_name(path.name + ".tmp")
+        with open(tmp, "wb") as f:  # file object: np.savez must not add a suffix
+            np.savez(f, __meta__=np.array(json.dumps(meta, default=str)), **arrays)
+        os.replace(tmp, path)
+        return path
+
+    def load_spinup_state(self, path, n_spin):
+        """Restore a state saved by save_spinup_state and return the timestep id at which the main loop continues.
+
+        Raises ValueError (nothing is changed) if the thermal config, the run context, the forcing during the
+        spin-up or the initial grid differ from those stored in the file."""
+        path = Path(path)
+        if not path.exists():
+            raise FileNotFoundError(f"Spin-up state file not found: {path}")
+        with np.load(path, allow_pickle=False) as z:
+            meta = json.loads(str(z["__meta__"]))
+            arrays = {k: z[k] for k in meta["arrays"]}
+        if meta["version"] != self.SPINUP_STATE_VERSION:
+            raise ValueError(f"Spin-up state {path} has format version {meta['version']}, expected {self.SPINUP_STATE_VERSION}")
+
+        thermal, context, forcing_hash = self._spinup_fingerprint(n_spin)
+        problems = []
+        if self._hash_json(thermal) != meta["thermal_hash"]:
+            old = json.loads(json.dumps(meta["thermal"], default=str))
+            new = json.loads(json.dumps(thermal, default=str))
+            diff = sorted(k for k in set(old) | set(new) if old.get(k) != new.get(k))
+            problems.append(f"thermal config differs from the one stored in the state (keys: {', '.join(diff)})")
+        if self._hash_json(context) != meta["context_hash"]:
+            old, new = meta["context"], json.loads(json.dumps(context, default=str))
+            diff = sorted(k for k in set(old) | set(new) if old.get(k) != new.get(k))
+            problems.append(f"run context differs (keys: {', '.join(diff)})")
+        if forcing_hash != meta["forcing_hash"]:
+            problems.append("the forcing data during the spin-up differ from those used to make the state")
+        if not (np.array_equal(arrays["xgr"], self.xgr) and np.array_equal(arrays["zgr"], self.zgr)):
+            problems.append("the initial grid/bathymetry differs from the one stored in the state")
+        if meta["n_spinup_steps"] != n_spin:
+            problems.append(f"spin-up length differs ({meta['n_spinup_steps']} steps in the state, {n_spin} now)")
+        if problems:
+            raise ValueError(f"Cannot restart from {path}: " + "; ".join(problems))
+
+        for name, value in arrays.items():
+            setattr(self, name, value.copy())
+        for name, value in meta["scalars"].items():
+            setattr(self, name, value)
+        # bookkeeping the main loop would have left behind: XBeach was off in every spin-up step
+        self.xbeach_times[:n_spin] = 0
+        self._ds_cache = None
+        return int(n_spin)
+
     def cleanup(self):
         """
         Cleanup method to delete variables and free memory at the end of the simulation.
@@ -2178,8 +2499,8 @@ class Simulation():
         values.append(self.convective_flux[index_x])
 
         # create dataframe at first timestep
-        if timestep_id == 0:
-                        
+        if timestep_id == 0 or not hasattr(self, "temperature_timeseries"):  # (second case: restart from a spin-up state)
+
             self.temperature_timeseries = pd.DataFrame(dict(zip(col_names, values)), index=[0])
             
         else:
@@ -2223,15 +2544,24 @@ class Simulation():
             raise ValueError("'level' variable should have a value of 1, 2, 3, or 4")
         return self.forcing_data[f"soil_temperature_level_{level}.csv"].values[timestep_id]
 
-    def _get_timeseries(self, tstart, tend, fpath):
+    def _get_timeseries(self, tstart, tend, fpath, flux_shift_hours=0):
         """returns timeseries start from tstart and ending at tend. The filepath has to be specified.
-        
+
+        flux_shift_hours (int): ERA5 'mean_surface_*' fluxes are mean rates over the hour *ending* at the time label, while
+        the thermal model applies row t over [t, t+1h]. With flux_shift_hours = 1 the three mean_surface_* columns are shifted
+        back one (hourly) record, so row t holds the mean over [t, t+1h]. 0 (default) applies no shift. The shift is done on
+        the full file, before the time mask, so the last model hour is also filled.
+
         returns: pd.DataFrame of length T"""
-        
+
         # read forcing file
         with open(fpath) as f:
             df = pd.read_csv(f, parse_dates=['time'])
-                    
+
+            if flux_shift_hours:
+                flux_cols = [c for c in df.columns if c.startswith('mean_surface_')]
+                df[flux_cols] = df[flux_cols].shift(-int(flux_shift_hours)).ffill()
+
             # mask out correct time frame
             mask = (df["time"] >= tstart) * (df["time"] < tend)
             
@@ -2267,15 +2597,8 @@ class NCAppender:
             self.ds.setncattr("References", "https://github.com/openearth/xbeach-toolbox")
             self.ds.setncattr("Comment", "Arctic XBeach model output combining thermal and morphological processes")
             
-            # Try to get git revision if available
-            try:
-                import subprocess
-                git_hash = subprocess.check_output(['git', 'rev-parse', '--short', 'HEAD'], 
-                                                 stderr=subprocess.DEVNULL, 
-                                                 cwd=Path(__file__).parent.parent).decode('ascii').strip()
-                self.ds.setncattr("Revision", f"git:{git_hash}")
-            except:
-                self.ds.setncattr("Revision", "unknown")
+            self.ds.setncattr("Version", __version__)
+            self.ds.setncattr("Revision", git_revision())
             
             # Add creation date
             self.ds.setncattr("Date_created", datetime.now().strftime('%Y-%m-%dT%H:%M:%SZ'))

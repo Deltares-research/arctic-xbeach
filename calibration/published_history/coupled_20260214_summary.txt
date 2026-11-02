@@ -1,0 +1,15 @@
+Study: coupled_20260214
+Database: N:\arctic-xbeach-runs\coupled_calibration_runs\20260214_calibration_runs\optuna_study.db
+Trials in database: 135 (complete with a finite value: 127, complete but not finite: 0, running/other: 8)
+Best value: 4.122178  at trial number 88
+Best parameters:
+  N_thaw_threshold: 3.0
+  bedfriccoef: 0.033501187112818874
+  dryslp: 0.5578092253749002
+  facua: 0.018829910025755153
+  lsgrad: 0.0
+  wetslp: 0.15233427680340267
+  xb_threshold: 2.012924093703792
+Best-so-far within 1 % of the final best (4.163400):  trial number 69 (ordered by trial number);  after 70 completed trials (ordered by completion time)
+Best-so-far within 0.1 % of the final best (4.126300):  trial number 88 (ordered by trial number);  after 91 completed trials (ordered by completion time)
+Median trial duration: 1643.8 min

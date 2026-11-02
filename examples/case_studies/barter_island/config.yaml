@@ -1,23 +1,41 @@
+# Barter Island case study with the PUBLISHED parameter set (coupled calibration trial 88, which contains the thermal
+# calibration trial 869). Source: coupled_calibration_runs/20260214_calibration_runs/optuna_trial_000088/config.yaml.
+# The solver options below are set to their legacy (v1.0) values; the flux and volumetric alternatives are listed with each option.
+# Run time: the 10-year spin-up of the thermal module dominates. To skip it in repeated runs, save the state once with
+# model.spinup_state_out and load it with model.spinup_state_in (see below).
+
 # data parameters
 data:
   forcing_data_path : 'examples/case_studies/barter_island/database/era5.csv'
   storm_data_path   : 'examples/case_studies/barter_island/database/storms.csv'
 
+  # v1.1 option. ERA5 'mean_surface_*' fluxes are means over the hour ENDING at the time label.
+  # 0 = no shift (each row is applied over the hour that follows its label, v1.0);  1 = shift the three flux columns back one hour,
+  # to the start of the averaging hour.
+  era5_flux_shift_hours : 0
+
 # model settings
 model:
   longitude         : -143.7  # longitude of the study site
   latitude          : 70.13  # latitude of the study site
-  time_start        : '01-07-2015' # DD-MM-YY starting time (if -1 take entire dataset) 	
-  time_end          : '01-01-2016'  # DD-MM-YY stopping time (if -1 take entire dataset)	
+  time_start        : '01-01-2002' # DD-MM-YY starting time (if -1 take entire dataset). Published run. Short test: '01-07-2015' with spin_up_time 0
+  time_end          : '01-01-2016'  # DD-MM-YY stopping time (if -1 take entire dataset)
   timestep          : 1  # size of timesteps (in hours)
-  call_xbeach_inter :  168  #  xbeach is called during inter-storm periods every X (wrapper) timesteps (default: 168, i.e. 1 week)
+  call_xbeach_inter : 168  #  xbeach is called during inter-storm periods every X (wrapper) timesteps (default: 168, i.e. 1 week)
   time_zone_diff    : -8  # [hours] relative difference in hours with respect to UTC. For Alaska equals -8.
-  spin_up_time      : 0  # [years] spin up time of the thermal module, during which no morphological update is performed
+  spin_up_time      : 10  # [years] spin up time of the thermal module, during which no morphological update is performed
+
+  # v1.1 options: save / reuse the thermal state at the end of the spin-up (default None = off). XBeach does not run during the
+  # spin-up, so the state is the thermal state on the unchanged initial bathymetry. A restart refuses to load if the thermal
+  # config, start time, spin-up length, timestep, forcing or initial grid differ from those the state was made with.
+  # Relative paths are relative to this folder.
+  # spinup_state_out : spinup_state.npz   # write the state when the spin-up has finished
+  # spinup_state_in  : spinup_state.npz   # skip the spin-up and continue from this state
 
 # wrapper parameters:
 wrapper:
   sea_ice_threshold     : 0.85  # Only run xbeach if sea ice fraction is below threshold, otherwise assume all wave action attenuated
-  xb_threshold          : 2.0   # [m + MSL] threshold value for total water level + R2% (CHECK THIS)
+  xb_threshold          : 2.012924093703792   # [m + MSL] threshold value for total water level + R2% (calibrated)
   CFL_thermal           : 0.5   # maximum CFL for thermal module
   CFL_xbeach            : 0.7   # maximum CFL for XBeach module
 
@@ -53,7 +71,7 @@ xbeach:
 
   # general settings
   with_xbeach : True  # include the xbeach module in the model, default true
-  version     : d:\software\XBeach\releases\halloween\XBeach_1.24.6057_Halloween_win64_netcdf\xbeach.exe
+  version     : d:\software\XBeach\releases\halloween\XBeach_1.24.6057_Halloween_win64_netcdf\xbeach.exe  # path to the XBeach executable (published runs: XBeach 1.24.6057 Halloween, win64 netcdf)
 
   # physical processes:
   with_wind     : False  # include wind in the xbeach model
@@ -70,47 +88,47 @@ xbeach:
   bcfile  : 'jonswap.txt'  # file containing the bc specifications
   rho_sea_water : 1025  # [kg/m3] density (sea) water
 
-  # sediment properties
-  dryslp      : 0.6  # [dz/dx] Critical avalanching slope above water (dz/dx and dz/dy) (placeholder)
-  wetslp      : 0.1  # [dz/dx] Critical avalanching slope below water (dz/dx and dz/dy) (placeholder)
+  # sediment properties (calibrated: bedfriccoef, dryslp, wetslp)
+  dryslp      : 0.5578092253749002  # [dz/dx] Critical avalanching slope above water (dz/dx and dz/dy)
+  wetslp      : 0.15233427680340267  # [dz/dx] Critical avalanching slope below water (dz/dx and dz/dy)
   D50         : 0.000036  # [m] mean grain size, value from Nando (personal communication)
   rho_solid   : 2650  # [kg/m3] density of sediment particles
-  bedfriccoef : 0.02  # [-] bed friction coefficient (placeholder)
+  bedfriccoef : 0.033501187112818874  # [-] bed friction coefficient
 
   # morphological parameters
   lsgrad : 0.0  # [1/m] Factor to include longshore transport gradient in 1d simulations; dsy/dy=lsgrad*sy; dimension 1/length scale of longshore gradients
 
-  # wave asymmetry factors
-  facSk: 0.0  # [-] Calibration factor time averaged flows due to wave skewness. Default is 0.15.
-  facAs: 0.0  # [-] Calibration factor time averaged flows due to wave asymmetry. Default is 0.20.
-  facua: 0.0  # [-] Calibration factor time averaged flows due to wave skewness and asymmetry. Default is 0.175.
+  # wave asymmetry factors (calibrated, one value for all three)
+  facSk: 0.018829910025755153  # [-] Calibration factor time averaged flows due to wave skewness. Default is 0.15.
+  facAs: 0.018829910025755153  # [-] Calibration factor time averaged flows due to wave asymmetry. Default is 0.20.
+  facua: 0.018829910025755153  # [-] Calibration factor time averaged flows due to wave skewness and asymmetry. Default is 0.175.
 
-# thermal moodel parameters
+# thermal model parameters (calibrated against the borehole temperatures, thermal trial 869; frozen in the coupled calibration)
 thermal:
-  L_water_ice: 334000000
+  L_water_ice: 334000  # [J/kg] latent heat of fusion of water
   MSL: 0
   N_thaw_threshold: 3
   T_melt: 273.15
   angle_max: 89
   angle_min: -89
-  c_soil_frozen: 1917175
-  c_soil_unfrozen: 3309495
+  c_soil_frozen: 1574265.3175829535  # [J/m3/K] volumetric heat capacity, frozen
+  c_soil_unfrozen: 3103885.0192965684  # [J/m3/K] volumetric heat capacity, unfrozen
   delta_angle: 1
-  depth_constant_k: 1.401650218762989
-  dt: 120
-  geothermal_gradient: 0.03395803226662663
+  depth_constant_k: 1.395528377852392  # [m] depth at which k reaches its maximum
+  dt: 120  # [s] thermal time step
+  geothermal_gradient: 0.020426871031478094  # [K/m]
   grid_interpolation: linear_interp_z
   grid_resolution: 200
   hc_guess: 500
-  k_soil_frozen_max: 2.7364526836777388
-  k_soil_frozen_min: 1.5358851275663115
-  k_soil_unfrozen_max: 1.4558844314384065
-  k_soil_unfrozen_min: 0.9169501454078107
-  max_depth: 10
-  nb_max: 0.26344543857050207
-  nb_max_depth: 0.5
-  nb_min: 0.26344543857050207
-  nb_min_depth: 1.5
+  k_soil_frozen_max: 1.7305832283149918  # [W/m/K]
+  k_soil_frozen_min: 0.9046457783637623
+  k_soil_unfrozen_max: 0.6305668303224798
+  k_soil_unfrozen_min: 0.3296227605203751
+  max_depth: 10  # [m]
+  nb_max: 0.7101082595355153  # [-] porosity (ice content) near the surface
+  nb_max_depth: 0.41887032171820293  # [m]
+  nb_min: 0.46951231603096133  # [-] porosity (ice content) at depth
+  nb_min_depth: 2.372186433986581  # [m]
   rho_ice: 917
   rho_particle: 2650
   rho_soil: None
@@ -125,6 +143,11 @@ thermal:
   with_solar: true
   with_solar_flux_calculator: true
 
+  # v1.1 solver options. The values below are the v1.0 (legacy) ones.
+  # Alternatives are  conduction_form: flux  and  latent_heat_form: volumetric  (the thermal parameters are calibrated per option set).
+  conduction_form  : nodal     # nodal: k * d2T/dz2 with nodal k (v1.0, not conservative for k(z, phase)) | flux: conservative finite-volume form with harmonic-mean k at the cell faces
+  latent_heat_form : per_mass  # per_mass: L*nb per kg of soil (v1.0; volumetric latent heat rho_soil*L*nb) | volumetric: L*nb*rho_water/rho_soil
+
 # output
 output:
   output_res              : 1  # temporal resolution of output variables in hours (i.e., model outputs given variable names every X hours)
@@ -133,4 +156,6 @@ output:
   save_ground_temp_layers: [0, 0.5, 1.0, 2.0, 2.95]  # [m] depths at which ground temperature is written seperately to csv file
   heat_fluxes: ['total_heat_flux[W/m2]', 'long_wave_radiation_flux[W/m2]', 'solar_radiation_flux[W/m2]', 'latent_heat_flux[W/m2]', 'convective_heat_flux[W/m2]']    # define heat fluxes to be used in memory output
 
-  
+  # v1.1 run diagnostics (read-only, do not change results), written to the result folder and summarised at the end of run.log
+  log_xbeach_calls : True  # xbeach_calls.csv: one row per XBeach call (time, reason storm|inter|both, hotstart, wall-clock of XBeach and grid update)
+  log_conservation : True  # conservation_log.csv: stored heat before/after each regrid (material vs interpolation error) and sediment budget

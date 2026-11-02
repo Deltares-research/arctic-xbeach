@@ -1,0 +1,26 @@
+Study: thermal_20260201
+Database: N:\arctic-xbeach-runs\thermal_calibration_runs\20260201_calibration_runs\optuna_study.db
+Trials in database: 1102 (complete with a finite value: 1085, complete but not finite: 1, running/other: 16)
+Best value: 1.058929  at trial number 869
+Best parameters:
+  L_water_ice: 334000.0
+  T_melt: 273.15
+  c_ratio: 1.9716403484401948
+  c_soil_frozen: 1574265.3175829535
+  geothermal_gradient: 0.020426871031478094
+  grid_resolution: 200.0
+  hc_guess: 500.0
+  k_compaction_factor: 1.9129954173279924
+  k_soil_frozen_min: 0.9046457783637623
+  k_soil_unfrozen_min: 0.3296227605203751
+  max_depth: 10.0
+  nb_increase: 0.24059594350455396
+  nb_min: 0.46951231603096133
+  rho_ice: 917.0
+  rho_particle: 2650.0
+  rho_water: 1000.0
+  transition_bottom: 2.372186433986581
+  transition_top: 0.41887032171820293
+Best-so-far within 1 % of the final best (1.069518):  trial number 427 (ordered by trial number);  after 428 completed trials (ordered by completion time)
+Best-so-far within 0.1 % of the final best (1.059988):  trial number 863 (ordered by trial number);  after 853 completed trials (ordered by completion time)
+Median trial duration: 41.1 min

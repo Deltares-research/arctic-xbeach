@@ -208,3 +208,6 @@ __marimo__/
 examples/case_studies/barter_island/database/era5.csv
 examples/case_studies/barter_island/database/storms.csv
 *.nc
+
+__pycache__/
+.pytest_cache/
