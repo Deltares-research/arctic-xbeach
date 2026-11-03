@@ -192,6 +192,15 @@ class Simulation():
         """
         # Store time parameters
         self.dt = dt
+        # The thermal substeps of a timestep are np.arange(0, dt * 3600, thermal.dt) (main.py), i.e. ceil(dt * 3600 / thermal.dt)
+        # steps. A thermal.dt that does not divide the timestep would silently integrate more thermal time than forcing time
+        # (thermal.dt = 500 s in a 1 h step: 8 x 500 = 4000 s per hour, +11 %).
+        thermal_dt = self.config.thermal.dt
+        if abs(dt * 3600 / thermal_dt - round(dt * 3600 / thermal_dt)) > 1e-9:
+            raise ValueError(
+                f"thermal.dt = {thermal_dt} s does not divide the model timestep of {dt} h ({dt * 3600:.0f} s); "
+                f"the thermal substeps would cover {np.ceil(dt * 3600 / thermal_dt) * thermal_dt:.0f} s per timestep"
+            )
         self.t_start = pd.to_datetime(t_start, dayfirst=True)
         self.t_end = pd.to_datetime(t_end, dayfirst=True)
         
@@ -1316,16 +1325,21 @@ class Simulation():
             )
 
         # A wet surface node (half cell) also gets the explicit convective flux hc * (T_sea - T_0), which adds
-        # 2 hc dt / (C dz) to the conduction coefficient 2 Fo of that node. The sum must stay below 2 or the node rings.
+        # b = 2 hc dt / (C dz) to the conduction coefficient 2 Fo of that node. The node by itself is stable for
+        # 2 Fo + b < 2, but it is coupled to its neighbour with weight 2 Fo, and the full update matrix can grow while that
+        # single-node bound holds (e.g. Fo = 0.4, b = 1.0 grows 3 % per step). The Gershgorin bound of the surface row,
+        # |1 - 2 Fo - b| + 2 Fo <= 1, i.e. 4 Fo + b <= 2, is sufficient for the whole scheme.
+        # hc_water is the effective coefficient after the surface-flux factors (zero when the flux is prescribed).
         wet_mask = getattr(self, 'wet_mask', None)  # not set by subclasses that override the boundary condition
         if wet_mask is not None and wet_mask.any():
             wet = wet_mask.astype(bool)
-            coeff_wet = (2 * self.k_matrix[wet, 0] / Cvol_matrix[wet, 0] * dt / self.dz**2
-                         + 2 * self.hc_water * dt / (Cvol_matrix[wet, 0] * self.dz))
+            hc_wet = np.broadcast_to(np.asarray(self.hc_water, dtype=float), wet.shape)[wet]
+            coeff_wet = (4 * self.k_matrix[wet, 0] / Cvol_matrix[wet, 0] * dt / self.dz**2
+                         + 2 * hc_wet * dt / (Cvol_matrix[wet, 0] * self.dz))
             coeff_max = float(np.nanmax(coeff_wet))
             if coeff_max >= 2:
                 raise ValueError(
-                    f"Thermal timestep too large for the wet surface node: 2 Fo + 2 hc dt / (C dz) = {coeff_max:.3f} >= 2. "
+                    f"Thermal timestep too large for the wet surface node: 4 Fo + 2 hc dt / (C dz) = {coeff_max:.3f} >= 2. "
                     f"Reduce dt to <= {2 * dt / coeff_max:.3e} s"
                 )
 
@@ -1442,9 +1456,9 @@ class Simulation():
         convective_factor = 1 if "sensitivity" not in self.config.keys() else self.config.sensitivity.factor_convective_heat_flux
         self.convective_flux = self.convective_flux * convective_factor
 
-        # kept for the explicit stability check of the wet surface node in thermal_update
+        # kept for the explicit stability check of the wet surface node in thermal_update (hc_water is set below,
+        # after the surface-flux factors, so that it is the coefficient the update actually sees)
         self.wet_mask = wet_mask
-        self.hc_water = hc * convective_factor
 
         if subgrid_timestep_id == 0:  # determine radiation fluxes only during first subgrid timestep, as they are constant for each subgrid timestep
         
@@ -1488,11 +1502,13 @@ class Simulation():
         conceptual_flux = getattr(self.config.data, 'conceptual_flux', None)
         
         if use_conceptual and conceptual_flux is not None and conceptual_flux != []:
-            # Conceptual mode: use constant heat flux
+            # Conceptual mode: use constant heat flux (no feedback on the surface temperature)
             self.heat_flux = np.full(self.xgr.shape, conceptual_flux)
+            self.hc_water = np.zeros(self.xgr.shape)
         else:
             # Normal mode: multiply with heat flux factor
             self.heat_flux = self.heat_flux * self.heat_flux_factors
+            self.hc_water = hc * convective_factor * self.heat_flux_factors
         
         # Determine temperature of the ghost nodes using configurable order
         ghost_node_order = self.config.thermal.get('ghost_node_order', 2)  # default to second order

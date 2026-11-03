@@ -10,7 +10,7 @@ import pandas as pd
 import pytest
 
 from legacy_scenario import SCENARIO as S, initial_temperature
-from verification_common import ColumnSim, layer_index, layered_steady, run_stefan, stable_dt, stefan_exact, STEFAN
+from verification_common import AttrDict, ColumnSim, layer_index, layered_steady, run_stefan, stable_dt, stefan_exact, STEFAN
 from arctic_xbeach.model import Simulation
 
 DATA = Path(__file__).parent / "data"
@@ -187,18 +187,28 @@ def wet_surface_sim(dt, hc, T_init_C, wet=True):
     return sim
 
 
+def wet_surface_coeff(sim, dt, hc):
+    """4 Fo + 2 hc dt / (C dz) of the surface node, the quantity the guard compares with 2."""
+    frozen = sim.temp_matrix[0, 0] <= sim.config.thermal.T_melt
+    k = sim.k_frozen_matrix[0, 0] if frozen else sim.k_unfrozen_matrix[0, 0]
+    C = sim.config.thermal.c_soil_frozen if frozen else sim.config.thermal.c_soil_unfrozen
+    return 4 * k / C * dt / sim.dz**2 + 2 * hc * dt / (C * sim.dz)
+
+
 @pytest.mark.parametrize("T_init_C, dt, hc, raises", [
-    (-2.0, 180, 500.0, False),    # 1.97 < 2 (frozen)
-    (-2.0, 360, 500.0, True),     # 3.94
-    (-2.0, 180, 1210.0, True),    # about 4.5
-    (-2.0, 60, 1210.0, False),    # about 1.5
-    (3.0, 180, 500.0, False),     # 1.01 (unfrozen)
-    (3.0, 360, 500.0, True),      # 2.02
+    (-2.0, 150, 500.0, False),    # 1.76 < 2 (frozen)
+    (-2.0, 180, 500.0, True),     # 2.11 (was 1.97 under the old single-node bound 2 Fo + b)
+    (-2.0, 360, 500.0, True),     # 4.23
+    (-2.0, 180, 1210.0, True),    # about 4.7
+    (-2.0, 60, 1210.0, False),    # about 1.6
+    (3.0, 180, 500.0, False),     # 1.02 (unfrozen)
+    (3.0, 360, 500.0, True),      # 2.03
     (3.0, 180, 1210.0, True),     # about 2.4 + conduction
     (3.0, 60, 1210.0, False),
 ])
 def test_wet_surface_stability_check(T_init_C, dt, hc, raises):
     sim = wet_surface_sim(dt, hc, T_init_C)
+    assert (wet_surface_coeff(sim, dt, hc) >= 2) == raises  # the parametrisation agrees with the bound
     if raises:
         with pytest.raises(ValueError, match="wet surface node"):
             sim.thermal_update(0, 0)
@@ -212,9 +222,64 @@ def test_wet_surface_check_reports_stable_dt():
         sim.thermal_update(0, 0)
     coeff = float(re.search(r"= ([\d.]+) >= 2", str(err.value)).group(1))
     dt_max = float(re.search(r"<= ([\d.e+-]+) s", str(err.value)).group(1))
-    assert coeff == pytest.approx(3.94, abs=0.01)
+    assert coeff == pytest.approx(wet_surface_coeff(sim, 360, 500.0), abs=0.01)  # 4.23
     assert dt_max == pytest.approx(2 * 360 / coeff, rel=1e-3)
     wet_surface_sim(dt_max * 0.99, 500.0, -2.0).thermal_update(0, 0)  # just below the limit passes
+
+
+def coupled_wet_sim(fourier, b, N=51, depth=10.0, k=1.7306, C=1574265.3):
+    """Frozen column under sea water below freezing (linear regime), with dt and hc chosen for the given interior
+    Fourier number and surface coefficient b = 2 hc dt / (C dz). Starts from a small random perturbation of T = T_sea."""
+    dz = depth / (N - 1)
+    dt = fourier * dz**2 / (k / C)
+    hc = b * C * dz / (2 * dt)
+    T_sea = 271.65
+    sim = ColumnSim(depth=depth, N=N, dt=dt, T_init=T_sea, k_frozen=k, k_unfrozen=k, c_frozen=C, c_unfrozen=C,
+                    nb_max=0.5, conduction_form="flux", latent_heat_form="volumetric")
+    sim.temp_matrix = T_sea + 1e-3 * np.random.default_rng(0).standard_normal((1, N))
+    sim.enthalpy_matrix = sim._enthalpy_from_temperature(sim.temp_matrix)
+    sim.wet_mask, sim.hc_water, sim.T_sea, sim.hc = np.full(1, True), hc, T_sea, hc
+    sim._get_ghost_node_boundary_condition = lambda i, j: _robin_ghost(sim)
+    return sim
+
+
+def _robin_ghost(sim):
+    sim.heat_flux = sim.hc * (sim.T_sea - sim.temp_matrix[:, 0])
+    return sim.temp_matrix[:, 1] + 2 * sim.dz * sim.heat_flux / sim.k_matrix[:, 0]
+
+
+def test_wet_guard_rejects_coupled_instability():
+    """Fo = 0.4, b = 1.0 satisfies the old single-node bound (2 Fo + b = 1.8 < 2) but the full explicit update grows
+    about 3 % per step; the guard must reject it. Fo = 0.4, b = 0.35 (4 Fo + b = 1.95) must pass and decay."""
+    with pytest.raises(ValueError, match="wet surface node"):
+        coupled_wet_sim(0.4, 1.0).thermal_update(0, 0)
+    sim = coupled_wet_sim(0.4, 0.35)
+    amp0 = np.abs(sim.temperature()[0] - sim.T_sea).max()
+    sim.advance(200)
+    assert np.abs(sim.temperature()[0] - sim.T_sea).max() < amp0
+
+
+def test_wet_guard_uses_effective_hc():
+    """hc_water is the coefficient after the surface-flux factors: zero (prescribed flux) must not trip the guard,
+    a factor above one must."""
+    sim = wet_surface_sim(360, 1210.0, -2.0)
+    sim.hc_water = np.zeros(1)
+    sim.thermal_update(0, 0)
+    sim = wet_surface_sim(60, 1210.0, -2.0)  # passes with factor 1 (about 1.6)
+    sim.hc_water = np.full(1, 2.0 * 1210.0)  # factor 2: about 3.0
+    with pytest.raises(ValueError, match="wet surface node"):
+        sim.thermal_update(0, 0)
+
+
+def test_thermal_dt_must_divide_timestep():
+    sim = wet_surface_sim(500, 500.0, -2.0)  # thermal.dt = 500 s
+    sim.config.output = AttrDict(output_res=1)  # set_temporal_params also builds the output index
+    with pytest.raises(ValueError, match="does not divide"):
+        sim.set_temporal_params("2016-06-14", "2016-06-15", 1)
+    for dt in (60, 120, 150, 900, 1800):
+        sim.config.thermal.dt = dt
+        sim.set_temporal_params("2016-06-14", "2016-06-15", 1)
+        assert len(sim.timestamps) == 24
 
 
 def test_wet_surface_check_skipped_when_dry_or_unset():
