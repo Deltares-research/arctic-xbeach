@@ -46,9 +46,10 @@ the observed bluff edge and shoreline positions with the thermal parameters fixe
   sets are given as comments in the scripts. For step 1 that set is the published thermal trial 869 config; with the flux and volumetric
   options it is a starting point, not the optimum; `c_ratio` of that set is close to the upper bound (2.0) of its range.
 * Resuming: run the script again with the same `RUN_ROOT_DIR`; `load_if_exists` continues the study and the driver runs the trials still
-  missing to reach `N_TRIALS` completed ones. Trials that were `RUNNING` when a job was killed are marked `FAIL` at the start of the next
-  run (the number is printed). This assumes that **only one driver process per study** runs at a time: a second driver on the same
-  study would have its live trials marked as failed.
+  missing to reach `N_TRIALS` completed ones. With journal storage (the cluster), trials that were `RUNNING` when a job was killed are marked
+  `FAIL` at the start of the next run (the number is printed); with sqlite (the desktop default) they are left as they are. This assumes that
+  **only one driver process per study** runs at a time: a second driver on the same study would have its live trials marked as failed
+  (the sbatch files use `--dependency=singleton`).
 
 ## Running on Linux / HPC
 
@@ -65,6 +66,8 @@ desktop nothing needs to be set. `hpc/h7/*.sbatch` sets them for the Deltares H7
 | `AXB_FORCING_CSV`, `AXB_STORM_CSV` | both | ERA5 forcing and storm table, written into every trial config |
 | `AXB_XBEACH_EXE` | coupled | path of the XBeach executable written into every config (empty = keep the base config's) |
 | `AXB_N_TRIALS`, `AXB_N_PARALLEL` | both | completed trials to reach, trials at the same time |
+| `AXB_MAX_FAILED_XBEACH_CALLS` | coupled | a trial with more failed XBeach calls (rows with `success` 0 in `results/xbeach_calls.csv`) than this gets `inf` (0); the count is the trial attribute `n_failed_xbeach_calls` |
+| `AXB_TIME_END` | coupled | `DD-MM-YYYY`, replaces `model.time_end` of the template (short smoke test; unset = keep it) |
 | `AXB_STUDY_NAME` | both | Optuna study name (`calibration_optuna`) |
 | `AXB_THERMAL_DT` | both | thermal time step [s] (thermal 360, coupled 90) |
 | `AXB_SENSOR_DEPTH_OFFSET` | thermal | [m] added to the sensor depths (0.0) |

@@ -1,7 +1,8 @@
 """Helpers shared by the two calibration drivers: study storage, trials left RUNNING, scratch folders, the shared print log.
 
-Only one driver process per study is supported. The 'RUNNING' trials found at the start are taken to be left by a killed
-earlier job and are marked FAIL; a second driver on the same study would have its live trials failed.
+Only one driver process per study is supported (the sbatch files use --dependency=singleton). With journal storage the 'RUNNING'
+trials found at the start are taken to be left by a killed earlier job and are marked FAIL; a second driver on the same study
+would have its live trials failed. With sqlite storage (desktop) RUNNING trials are left as they are.
 """
 import shutil
 import threading
@@ -31,14 +32,16 @@ def make_storage(kind: str, run_root: Path):
 
 
 def open_study(study_name: str, run_root: Path, storage_kind: str, sampler) -> optuna.Study:
-    """Create or load the study (a rerun continues it) and mark the trials that a killed job left RUNNING as FAIL."""
+    """Create or load the study (a rerun continues it). With journal storage (the cluster, one driver per study) the trials that a
+    killed job left RUNNING are marked FAIL; with sqlite (desktop) they are left as they were."""
     run_root.mkdir(parents=True, exist_ok=True)
     study = optuna.create_study(study_name=study_name, direction="minimize", load_if_exists=True,
                                 storage=make_storage(storage_kind, run_root), sampler=sampler)
-    stale = study.get_trials(deepcopy=False, states=(optuna.trial.TrialState.RUNNING,))
-    for t in stale:
-        study.tell(t.number, state=optuna.trial.TrialState.FAIL)
-    print(f"Marked {len(stale)} trials left RUNNING by an earlier job as FAIL")
+    if storage_kind == "journal":
+        stale = study.get_trials(deepcopy=False, states=(optuna.trial.TrialState.RUNNING,))
+        for t in stale:
+            study.tell(t.number, state=optuna.trial.TrialState.FAIL)
+        print(f"Marked {len(stale)} trials left RUNNING by an earlier job as FAIL")
     return study
 
 
@@ -51,7 +54,11 @@ def trial_dirs(run_root: Path, scratch: Path | None, number: int) -> tuple[Path,
 def finish_trial_dir(work_dir: Path, final_dir: Path, keep_results_nc: bool, keep_xb_files: bool) -> None:
     """With scratch: copy the trial folder back to RUN_ROOT (also after a failed run: run.log is needed) without the XBeach
     call folders and, unless kept, results.nc, then delete the scratch copy. Without scratch: delete the XBeach call folders
-    after scoring if keep_xb_files is False."""
+    after scoring if keep_xb_files is False.
+
+    This never raises: an error in the copy would abort the whole study. If the copy fails the error is printed and run.log and
+    config.yaml are copied on their own. The scratch folder is kept, but a per-job TMPDIR is deleted by the job epilog, so
+    whatever was not copied is lost at the end of the job."""
     xb_files = work_dir / "results" / "xb_files"  # one folder per XBeach call (about 23 files each), written by arctic_xbeach/model.py
     if work_dir == final_dir:
         if not keep_xb_files:
@@ -65,7 +72,17 @@ def finish_trial_dir(work_dir: Path, final_dir: Path, keep_results_nc: bool, kee
             return []
         return [n for n in names if n == "xb_files" or (n == "results.nc" and not keep_results_nc)]
 
-    if final_dir.exists():
-        shutil.rmtree(final_dir)
-    shutil.copytree(work_dir, final_dir, ignore=ignore)
+    try:
+        if final_dir.exists():
+            shutil.rmtree(final_dir)
+        shutil.copytree(work_dir, final_dir, ignore=ignore)
+    except OSError as e:  # full disk, NFS error: keep the study alive and save what matters
+        print(f"  ERROR copying {work_dir} to {final_dir}: {e}")
+        for name in ("run.log", "config.yaml"):
+            try:
+                final_dir.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(work_dir / name, final_dir / name)
+            except OSError as e2:
+                print(f"  ERROR copying {name} to {final_dir}: {e2}")
+        return
     shutil.rmtree(work_dir, ignore_errors=True)  # only reached if the copy worked; after a failed copy the scratch folder stays

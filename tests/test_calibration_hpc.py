@@ -15,7 +15,7 @@ CALIB_DIR = Path(__file__).resolve().parents[1] / "calibration"
 AXB_VARIABLES = [
     "AXB_BASE_SIM_DIR", "AXB_RUN_ROOT", "AXB_OBS_CSV", "AXB_BLUFF_EDGES_CSV", "AXB_SHORELINES_CSV", "AXB_THERMAL_CONFIG_YAML",
     "AXB_FORCING_CSV", "AXB_STORM_CSV", "AXB_XBEACH_EXE", "AXB_N_TRIALS", "AXB_N_PARALLEL", "AXB_STUDY_NAME", "AXB_THERMAL_DT",
-    "AXB_SENSOR_DEPTH_OFFSET", "AXB_STORAGE", "AXB_SCRATCH", "AXB_KEEP_XB_FILES", "AXB_CONSTANT_LIAR",
+    "AXB_SENSOR_DEPTH_OFFSET", "AXB_STORAGE", "AXB_SCRATCH", "AXB_KEEP_XB_FILES", "AXB_CONSTANT_LIAR", "AXB_MAX_FAILED_XBEACH_CALLS", "AXB_TIME_END",
 ]
 
 sys.path.insert(0, str(CALIB_DIR))  # the drivers import optuna_hpc from their own folder when run as scripts
@@ -77,6 +77,17 @@ def test_coupled_environment_overrides_the_configuration(monkeypatch, tmp_path, 
     assert (m.BLUFF_EDGES_CSV, m.SHORELINES_CSV, m.THERMAL_CONFIG_YAML) == (be, sl, tmp_path / "thermal.yaml")
     assert (m.XBEACH_EXE, m.RUN_ROOT_DIR, m.N_PARALLEL) == ("/opt/xbeach/bin/xbeach", tmp_path / "run", 42)
     assert len(m.DF_BE) == 2 and m.DF_SL["distance_from_ref"].tolist() == [4.0, 5.0]  # the observations come from the files named by the environment
+
+
+def test_coupled_failed_call_limit_and_time_end_come_from_the_environment(monkeypatch, observations):
+    be, sl = observations
+    monkeypatch.setenv("AXB_BLUFF_EDGES_CSV", str(be))
+    monkeypatch.setenv("AXB_SHORELINES_CSV", str(sl))
+    assert (load_driver("auto_calibrate_coupled_model").MAX_FAILED_XBEACH_CALLS, load_driver("auto_calibrate_coupled_model").TIME_END) == (0, None)
+    monkeypatch.setenv("AXB_MAX_FAILED_XBEACH_CALLS", "3")
+    monkeypatch.setenv("AXB_TIME_END", "01-03-2012")
+    m = load_driver("auto_calibrate_coupled_model")
+    assert (m.MAX_FAILED_XBEACH_CALLS, m.TIME_END) == (3, "01-03-2012")
 
 
 def test_coupled_without_xbeach_exe_keeps_the_base_config(monkeypatch, observations):
@@ -149,6 +160,25 @@ def test_failed_trial_is_copied_back_with_its_run_log(monkeypatch, tmp_path):
     assert list((tmp_path / "scratch").iterdir()) == []
 
 
+def test_failed_copy_back_keeps_the_trial_scored_and_saves_run_log(monkeypatch, tmp_path, capsys):
+    m = thermal_driver(monkeypatch, tmp_path, n_trials=1)
+
+    real_copytree = hpc.shutil.copytree
+
+    def broken_copytree(src, dst, **kwargs):  # only the copy back to RUN_ROOT fails, not the copy of the base folder into scratch
+        if Path(dst).parent != tmp_path / "run":
+            return real_copytree(src, dst, **kwargs)
+        Path(dst).mkdir(parents=True)
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(hpc.shutil, "copytree", broken_copytree)
+    m.main()  # must not raise
+    assert "ERROR copying" in capsys.readouterr().out
+    assert [t.state.name for t in journal_study(tmp_path).trials] == ["COMPLETE"]
+    final = tmp_path / "run" / "optuna_trial_000000"
+    assert (final / "run.log").exists() and (final / "config.yaml").exists()
+
+
 # --- (c) trials left RUNNING by a killed job -------------------------------------------------------------------------
 def test_running_trial_is_marked_fail_and_the_study_continues(monkeypatch, tmp_path, capsys):
     m = thermal_driver(monkeypatch, tmp_path, n_trials=2)
@@ -163,12 +193,12 @@ def test_running_trial_is_marked_fail_and_the_study_continues(monkeypatch, tmp_p
     assert states == ["FAIL", "COMPLETE", "COMPLETE"]  # N_TRIALS counts completed trials only
 
 
-def test_sqlite_study_also_marks_running_trials_as_fail(tmp_path):
+def test_sqlite_study_leaves_running_trials_alone(tmp_path):
     for _ in range(2):  # the second open is the restart after the kill
         study = hpc.open_study("s", tmp_path, "sqlite", optuna.samplers.TPESampler(seed=1))
         if not study.trials:
             study.ask()
-    assert [t.state.name for t in study.trials] == ["FAIL"]
+    assert [t.state.name for t in study.trials] == ["RUNNING"]  # desktop behaviour, as before the journal storage
 
 
 # --- the coupled driver ------------------------------------------------------------------------------------------------
@@ -182,14 +212,16 @@ def test_coupled_trials_with_journal_and_scratch(monkeypatch, tmp_path, observat
         monkeypatch.setenv(var, str(value))
     (tmp_path / "scratch").mkdir()
     m = load_driver("auto_calibrate_coupled_model")
-    monkeypatch.setattr(m, "run_simulation", fake_run)
+    monkeypatch.setattr(m, "run_simulation", lambda sim_dir: (fake_run(sim_dir), 0))  # the coupled one also returns the failed XBeach calls
     monkeypatch.setattr(m, "TEMPLATE", template)
     monkeypatch.setattr(m, "SPINUP_STATE", None)
 
     study = hpc.open_study("calibration_optuna", m.RUN_ROOT_DIR, m.STORAGE, optuna.samplers.TPESampler(seed=1, constant_liar=True))
     study.optimize(m.objective, n_trials=2, n_jobs=2)
 
-    assert [t.state.name for t in journal_study(tmp_path).trials] == ["COMPLETE", "COMPLETE"]
+    trials = journal_study(tmp_path).trials
+    assert [t.state.name for t in trials] == ["COMPLETE", "COMPLETE"]
+    assert [t.user_attrs["n_failed_xbeach_calls"] for t in trials] == [0, 0]
     for number in range(2):
         folder = tmp_path / "run" / f"optuna_trial_{number:06d}"
         assert (folder / "run.log").exists() and not (folder / "results" / "xb_files").exists()

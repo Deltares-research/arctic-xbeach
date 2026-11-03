@@ -20,8 +20,11 @@ Run:  python calibration/auto_calibrate_coupled_model.py        (see calibration
 On a Linux cluster the same script is configured through AXB_* environment variables (hpc/h7/coupled_calibration.sbatch). With
 STORAGE = "journal" the study is an append-only file that is safe on NFS; with SCRATCH set each trial runs on that (local) disk and
 is copied back to RUN_ROOT_DIR without its results/xb_files. The template and the spin-up state stay in RUN_ROOT_DIR. Only ONE driver
-process per study is supported: at start, trials still RUNNING in the study are taken to be left by a killed earlier job and are
-marked FAIL.
+process per study is supported (the sbatch file uses --dependency=singleton): with journal storage, trials still RUNNING at start
+are taken to be left by a killed earlier job and are marked FAIL.
+
+A trial with more failed XBeach calls than MAX_FAILED_XBEACH_CALLS (counted in results/xbeach_calls.csv) is not scored (inf):
+main.py logs a failed call and carries on, which would otherwise be scored as a run without that morphological change.
 """
 # === CONFIGURATION ===
 # The AXB_* environment variables override the defaults below (used by hpc/h7/*.sbatch); without them nothing changes.
@@ -42,6 +45,8 @@ XBEACH_EXE = os.environ.get("AXB_XBEACH_EXE") or None   # path of xbeach.exe wri
 N_TRIALS = int(os.environ.get("AXB_N_TRIALS", 10))          # completed trials the study should reach; a rerun on an existing study runs only the rest
                        # (published study: 25 epochs x 8 workers = 200)
 N_PARALLEL = int(os.environ.get("AXB_N_PARALLEL", 8))         # trials running at the same time (one child process each)
+MAX_FAILED_XBEACH_CALLS = int(os.environ.get("AXB_MAX_FAILED_XBEACH_CALLS", 0))  # a trial with more failed XBeach calls than this is not scored (inf)
+TIME_END = os.environ.get("AXB_TIME_END") or None   # 'DD-MM-YYYY', replaces model.time_end of the template (short smoke test); None = keep it
 SEED = 1               # seed of the TPE sampler (with N_PARALLEL > 1 the order in which trials finish still varies)
 START_PARAMS = None    # enqueue this parameter set as the first trial of a new study. Example: the published best (trial 88, value 4.1222)
 # START_PARAMS = dict(facua=0.018829910025755153, bedfriccoef=0.033501187112818874, wetslp=0.15233427680340267,
@@ -83,6 +88,7 @@ import threading
 import time
 import warnings
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))  # so that optuna_hpc is found when the file is not run as a script
 import optuna_hpc as hpc  # calibration/optuna_hpc.py, next to this script
 import matplotlib
 matplotlib.use("Agg")  # non-interactive backend
@@ -149,6 +155,7 @@ def apply_common_options(config: dict) -> dict:
         config["data"]["storm_data_path"] = str(STORM_CSV)
     if XBEACH_EXE is not None:
         config["xbeach"]["version"] = str(XBEACH_EXE)
+    config.setdefault("output", {})["log_xbeach_calls"] = True  # xbeach_calls.csv is how failed XBeach calls are counted
     return config
 
 
@@ -189,6 +196,8 @@ def prepare_template() -> Path:
         config["thermal"] = yaml.safe_load(Path(THERMAL_CONFIG_YAML).read_text())["thermal"]
     if THERMAL_DT is not None:
         config["thermal"]["dt"] = THERMAL_DT  # after the replacement above, which brings the dt of the thermal calibration
+    if TIME_END is not None:
+        config["model"]["time_end"] = TIME_END
     apply_common_options(config)
     (template / "config.yaml").write_text(yaml.dump(config, default_flow_style=False))
     return template
@@ -278,21 +287,45 @@ def results_end_problem(sim_dir: Path, last_time) -> str | None:
     return None
 
 
-def run_simulation(sim_dir: Path) -> float:
-    """Run one trial in a child process and return the combined RMSE (inf if the run or the scoring failed).
+def count_failed_xbeach_calls(sim_dir: Path) -> int | None:
+    """Number of XBeach calls with success = 0 in results/xbeach_calls.csv (written by main.py, one row per call), None if the
+    file is missing. main.py logs a failed call and carries on, so only this file shows it."""
+    path = sim_dir / "results" / "xbeach_calls.csv"
+    if not path.exists():
+        return None
+    return int((pd.read_csv(path)["success"] == 0).sum())
 
-    A child with a nonzero exit code, or a results.nc that stops before the end of the scored period, is not scored."""
+
+def run_simulation(sim_dir: Path) -> tuple[float, int | None]:
+    """Run one trial in a child process and return (combined RMSE, number of failed XBeach calls).
+
+    The RMSE is inf if the run or the scoring failed: a child with a nonzero exit code, a results.nc that stops before the end of
+    the scored period, or more than MAX_FAILED_XBEACH_CALLS failed XBeach calls is not scored. The count is None if it is unknown."""
     returncode = launch(sim_dir)
     print(f" => simulation finished: {sim_dir.name}")
 
     nc_path = sim_dir / "results" / "results.nc"
+    n_failed = None
     try:
         if returncode != 0:  # a killed run can leave a partial results.nc
             print(f"  => run failed (exit code {returncode}), not scored: {sim_dir.name}")
-            return float("inf")
+            return float("inf"), n_failed
         if not nc_path.exists():
             print(f"  WARNING: results file not found: {nc_path}")
-            return float("inf")
+            return float("inf"), n_failed
+
+        cfg = yaml.safe_load((sim_dir / "config.yaml").read_text())
+        if cfg.get("xbeach", {}).get("with_xbeach", True):
+            n_failed = count_failed_xbeach_calls(sim_dir)
+            if n_failed is None:
+                print(f"  => xbeach_calls.csv not found in {sim_dir / 'results'} (no XBeach call was made, or output.log_xbeach_calls is false), "
+                      f"failed calls cannot be counted, not scored: {sim_dir.name}")
+                return float("inf"), n_failed
+            if n_failed > MAX_FAILED_XBEACH_CALLS:
+                print(f"  => {n_failed} failed XBeach calls (allowed: {MAX_FAILED_XBEACH_CALLS}), not scored: {sim_dir.name}")
+                return float("inf"), n_failed
+        else:
+            n_failed = 0
 
         with POSTPROC_LOCK:  # variables are loaded inside the lock (xarray reads lazily), the loop below then works on memory
             with xr.open_dataset(nc_path, engine="netcdf4") as ds:
@@ -302,7 +335,7 @@ def run_simulation(sim_dir: Path) -> float:
         problem = results_end_problem(sim_dir, last_time)
         if problem:
             print(f"  => run incomplete, not scored: {problem}")
-            return float("inf")
+            return float("inf"), n_failed
         n_times = len(time_datetime)
 
         shoreline_pos, bluff_pos = np.zeros(n_times), np.zeros(n_times)
@@ -361,11 +394,11 @@ def run_simulation(sim_dir: Path) -> float:
                 plt.close(fig)
 
         gc.collect()
-        return combined
+        return combined, n_failed
 
     except Exception as e:
         print(f"  ERROR processing results of {sim_dir.name}: {e}")
-        return float("inf")
+        return float("inf"), n_failed
 
     finally:
         if REMOVE_RESULTS_NC and nc_path.exists():
@@ -399,11 +432,12 @@ def objective(trial: optuna.Trial) -> float:
             shutil.rmtree(work_dir)
         shutil.copytree(TEMPLATE, work_dir)
         update_config_yaml(work_dir, params, extra_model={"spinup_state_in": str(SPINUP_STATE)} if SPINUP_STATE else None)
-        rmse = run_simulation(work_dir)
+        rmse, n_failed = run_simulation(work_dir)
     finally:  # also after a failed run: run.log is needed
         hpc.finish_trial_dir(work_dir, sim_dir, not REMOVE_RESULTS_NC, KEEP_XB_FILES)
     trial.set_user_attr("sim_dir", str(sim_dir))
     trial.set_user_attr("rmse", float(rmse))
+    trial.set_user_attr("n_failed_xbeach_calls", n_failed)  # None if the run did not get as far as counting
 
     try:
         hpc.append_log(RUN_ROOT_DIR / "calibration_prints.txt",

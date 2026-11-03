@@ -16,8 +16,8 @@ Run:  python calibration/run_thermal_calibration.py        (see calibration/READ
 
 On a Linux cluster the same script is configured through AXB_* environment variables (hpc/h7/thermal_calibration.sbatch). With
 STORAGE = "journal" the study is an append-only file that is safe on NFS; with SCRATCH set each trial runs on that (local) disk and
-is copied back to RUN_ROOT_DIR. Only ONE driver process per study is supported: at start, trials still RUNNING in the study are taken
-to be left by a killed earlier job and are marked FAIL.
+is copied back to RUN_ROOT_DIR. Only ONE driver process per study is supported (the sbatch file uses --dependency=singleton): with
+journal storage, trials still RUNNING at start are taken to be left by a killed earlier job and are marked FAIL.
 """
 # === CONFIGURATION ===
 # The AXB_* environment variables override the defaults below (used by hpc/h7/*.sbatch); without them nothing changes.
@@ -72,6 +72,7 @@ import sys
 import threading
 import warnings
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))  # so that optuna_hpc is found when the file is not run as a script
 import optuna_hpc as hpc  # calibration/optuna_hpc.py, next to this script
 import matplotlib
 matplotlib.use("Agg")  # non-interactive backend

@@ -6,7 +6,7 @@
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=44
-#SBATCH --exclusive
+#SBATCH --dependency=singleton
 #SBATCH --time=14-00:00:00
 #SBATCH --output=%x_%j.out
 # Coupled (thermal + XBeach) Optuna calibration (calibration/auto_calibrate_coupled_model.py) on one 44vcpu node, one trial per core.
@@ -43,8 +43,14 @@ export AXB_CONSTANT_LIAR=${AXB_CONSTANT_LIAR:-1}
 export AXB_KEEP_XB_FILES=${AXB_KEEP_XB_FILES:-0}      # only matters without scratch
 export AXB_SCRATCH=${AXB_SCRATCH-${TMPDIR:-}}         # job TMPDIR; AXB_SCRATCH= (empty) switches scratch off
 
+# when the job ends, also when set -e aborts it, list what is left in the scratch folder (the job epilog deletes it)
+trap 'if [ -n "${AXB_SCRATCH:-}" ]; then echo "left in AXB_SCRATCH=$AXB_SCRATCH:"; ls -la "$AXB_SCRATCH" || true; fi' EXIT
+
 export HDF5_USE_FILE_LOCKING=FALSE
 export OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 MKL_NUM_THREADS=1
+# XBeach is MPI-linked and started by main.py as a single process (singleton). Without this every OpenMPI process binds itself
+# to core 0 of the node, and the ~42 parallel XBeach runs would share one core.
+export OMPI_MCA_hwloc_base_binding_policy=none
 
 echo "host:   $(hostname)"
 echo "date:   $(date)"
@@ -60,4 +66,16 @@ ldd "$AXB_XBEACH_EXE" | grep 'not found' || true
 env | grep '^AXB_' | sort
 
 cd "$REPO_DIR"
+
+# file locks must work in AXB_RUN_ROOT (the run lock of arctic_xbeach); NFSv3 without a lock daemon would fail every run
+mkdir -p "$AXB_RUN_ROOT/_lockprobe"
+python -c 'import sys
+from arctic_xbeach.run_lock import acquire_run_lock, release_run_lock
+try:
+    release_run_lock(acquire_run_lock(sys.argv[1]))
+except Exception as e:
+    print(f"File lock probe FAILED in {sys.argv[1]}: {e}")
+    sys.exit(1)
+print(f"File lock probe OK in {sys.argv[1]}")' "$AXB_RUN_ROOT/_lockprobe"
+
 python -u calibration/auto_calibrate_coupled_model.py

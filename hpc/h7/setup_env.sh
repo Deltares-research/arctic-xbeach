@@ -1,6 +1,6 @@
-#!/bin/bash
+#!/bin/bash -l
 # One-time setup of the conda environment for Arctic-XBeach on the Deltares H7 cluster. Run it again to update the environment.
-#   bash hpc/h7/setup_env.sh        (from the repo checkout, on a login node)
+#   bash -l hpc/h7/setup_env.sh     (from the repo checkout, on a login node; -l so that the module command is defined)
 set -euo pipefail
 
 REPO_DIR=${AXB_REPO_DIR:-/u/nederhof/git/arctic-xbeach}

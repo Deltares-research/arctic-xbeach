@@ -31,10 +31,13 @@ def load_driver(name):
         sys.path.remove(str(REPO_ROOT / "calibration"))
 
 
-def make_trial(tmp_path, n_records, time_end="05-01-2010"):
-    """Trial folder with a config.yaml and a results.nc of n_records hourly records labelled at the end of their step."""
+def make_trial(tmp_path, n_records, time_end="05-01-2010", calls_success=(1, 1)):
+    """Trial folder with a config.yaml, a results.nc of n_records hourly records labelled at the end of their step and an
+    xbeach_calls.csv with one row per entry of calls_success (None = no file)."""
     sim_dir = tmp_path / "trial"
     (sim_dir / "results").mkdir(parents=True)
+    if calls_success is not None:
+        pd.DataFrame({"call_id": range(1, len(calls_success) + 1), "success": calls_success}).to_csv(sim_dir / "results" / "xbeach_calls.csv", index=False)
     cfg = dict(model=dict(time_start="01-01-2010", time_end=time_end, timestep=1), output=dict(output_res=1))
     (sim_dir / "config.yaml").write_text(yaml.safe_dump(cfg))
     with netCDF4.Dataset(sim_dir / "results" / "results.nc", "w") as nc:
@@ -109,19 +112,44 @@ def test_thermal_complete_results_are_scored(thermal, monkeypatch, tmp_path):
 def test_coupled_failed_child_is_not_scored(coupled, monkeypatch, tmp_path):
     sim_dir = make_trial(tmp_path, n_records=96, time_end="05-01-2010")
     stub_child(monkeypatch, coupled, returncode=1)
-    assert coupled.run_simulation(sim_dir) == float("inf")
+    assert coupled.run_simulation(sim_dir)[0] == float("inf")
     assert not (sim_dir / "metrics.txt").exists()
 
 
 def test_coupled_results_that_stop_early_are_not_scored(coupled, monkeypatch, tmp_path):
     sim_dir = make_trial(tmp_path, n_records=60, time_end="05-01-2010")
     stub_child(monkeypatch, coupled, returncode=0)
-    assert coupled.run_simulation(sim_dir) == float("inf")
+    assert coupled.run_simulation(sim_dir)[0] == float("inf")
     assert not (sim_dir / "metrics.txt").exists()
 
 
 def test_coupled_complete_results_are_scored(coupled, monkeypatch, tmp_path):
     sim_dir = make_trial(tmp_path, n_records=96, time_end="05-01-2010")
     stub_child(monkeypatch, coupled, returncode=0)
-    assert np.isfinite(coupled.run_simulation(sim_dir))
+    rmse, n_failed = coupled.run_simulation(sim_dir)
+    assert np.isfinite(rmse) and n_failed == 0
     assert (sim_dir / "metrics.txt").exists()
+
+
+# failed XBeach calls: main.py logs them and carries on, xbeach_calls.csv (success column) is the record
+def test_coupled_failed_xbeach_calls_are_not_scored(coupled, monkeypatch, tmp_path, capsys):
+    sim_dir = make_trial(tmp_path, n_records=96, calls_success=(1, 0, 1, 0))
+    stub_child(monkeypatch, coupled, returncode=0)
+    assert coupled.run_simulation(sim_dir) == (float("inf"), 2)
+    assert "2 failed XBeach calls (allowed: 0)" in capsys.readouterr().out
+    assert not (sim_dir / "metrics.txt").exists()
+
+
+def test_coupled_failed_xbeach_calls_up_to_the_limit_are_scored(coupled, monkeypatch, tmp_path):
+    sim_dir = make_trial(tmp_path, n_records=96, calls_success=(1, 0, 1))
+    stub_child(monkeypatch, coupled, returncode=0)
+    monkeypatch.setattr(coupled, "MAX_FAILED_XBEACH_CALLS", 1)
+    rmse, n_failed = coupled.run_simulation(sim_dir)
+    assert np.isfinite(rmse) and n_failed == 1
+
+
+def test_coupled_missing_call_log_is_not_scored(coupled, monkeypatch, tmp_path, capsys):
+    sim_dir = make_trial(tmp_path, n_records=96, calls_success=None)
+    stub_child(monkeypatch, coupled, returncode=0)
+    assert coupled.run_simulation(sim_dir) == (float("inf"), None)
+    assert "xbeach_calls.csv not found" in capsys.readouterr().out
