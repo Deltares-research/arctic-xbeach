@@ -73,6 +73,8 @@ import threading
 import warnings
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))  # so that optuna_hpc is found when the file is not run as a script
+sys.path.insert(0, str(REPO_DIR))  # for arctic_xbeach.config_loader
+from arctic_xbeach.config_loader import load_config  # a duplicate key in a config.yaml is an error
 import optuna_hpc as hpc  # calibration/optuna_hpc.py, next to this script
 import matplotlib
 matplotlib.use("Agg")  # non-interactive backend
@@ -152,7 +154,7 @@ def suggest_thermal_params(trial: optuna.Trial) -> dict:
 def update_config_yaml(sim_dir: Path, params: dict):
     """Write sampled parameters into thermal (only keys that exist there), then the v1.1 options and the forcing paths."""
     config_path = sim_dir / "config.yaml"
-    config = yaml.safe_load(config_path.read_text())
+    config = load_config(config_path)
 
     for k, v in params.items():
         if isinstance(v, np.integer):
@@ -198,7 +200,7 @@ def results_end_problem(sim_dir: Path, last_time) -> str | None:
 
     The scored period ends at model.time_end of the trial config or at the end of OUTPUT_WINDOW, whichever is earlier. Records are
     labelled at the end of their step and written every output_res steps, so a complete run ends within one record spacing of it."""
-    cfg = yaml.safe_load((sim_dir / "config.yaml").read_text())
+    cfg = load_config(sim_dir / "config.yaml")
     end = pd.to_datetime(cfg["model"]["time_end"], dayfirst=True)
     if OUTPUT_WINDOW is not None:
         end = min(end, pd.to_datetime(OUTPUT_WINDOW[1], dayfirst=True))

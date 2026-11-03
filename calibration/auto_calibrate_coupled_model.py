@@ -89,6 +89,8 @@ import time
 import warnings
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))  # so that optuna_hpc is found when the file is not run as a script
+sys.path.insert(0, str(REPO_DIR))  # for arctic_xbeach.config_loader
+from arctic_xbeach.config_loader import load_config  # a duplicate key in a config.yaml is an error
 import optuna_hpc as hpc  # calibration/optuna_hpc.py, next to this script
 import matplotlib
 matplotlib.use("Agg")  # non-interactive backend
@@ -162,7 +164,7 @@ def apply_common_options(config: dict) -> dict:
 def update_config_yaml(sim_dir: Path, params: dict, extra_model: dict | None = None):
     """Write the sampled XBeach / wrapper parameters (and extra model options) into config.yaml of a trial."""
     config_path = sim_dir / "config.yaml"
-    config = yaml.safe_load(config_path.read_text())
+    config = load_config(config_path)
     clean = {}
     for k, v in params.items():
         clean[k] = int(v) if isinstance(v, np.integer) else float(v) if isinstance(v, np.floating) else v.tolist() if isinstance(v, np.ndarray) else v
@@ -191,9 +193,9 @@ def prepare_template() -> Path:
     if template.exists():
         shutil.rmtree(template)
     shutil.copytree(BASE_SIM_DIR, template)
-    config = yaml.safe_load((template / "config.yaml").read_text())
+    config = load_config(template / "config.yaml")
     if THERMAL_CONFIG_YAML is not None:
-        config["thermal"] = yaml.safe_load(Path(THERMAL_CONFIG_YAML).read_text())["thermal"]
+        config["thermal"] = load_config(Path(THERMAL_CONFIG_YAML))["thermal"]
     if THERMAL_DT is not None:
         config["thermal"]["dt"] = THERMAL_DT  # after the replacement above, which brings the dt of the thermal calibration
     if TIME_END is not None:
@@ -215,7 +217,7 @@ def launch(sim_dir: Path) -> int:
 def ensure_spinup_state(template: Path) -> Path:
     """Create RUN_ROOT_DIR/spinup_state.npz once (spin-up without XBeach). An existing file must match the template's thermal config."""
     state = RUN_ROOT_DIR / "spinup_state.npz"
-    config = yaml.safe_load((template / "config.yaml").read_text())
+    config = load_config(template / "config.yaml")
 
     if state.exists():
         sys.path.insert(0, str(REPO_DIR))
@@ -279,7 +281,7 @@ def results_end_problem(sim_dir: Path, last_time) -> str | None:
     The scored period ends at CALIB_END or model.time_end of the trial config, whichever is earlier. The XBeach records
     (time_xbeach) are only written at XBeach calls and can stop weeks before the end, so the thermal records are checked. They are
     labelled at the end of their step and written every output_res steps: a complete run ends within one record spacing of it."""
-    cfg = yaml.safe_load((sim_dir / "config.yaml").read_text())
+    cfg = load_config(sim_dir / "config.yaml")
     end = min(pd.to_datetime(cfg["model"]["time_end"], dayfirst=True), pd.Timestamp(CALIB_END))
     spacing = pd.Timedelta(hours=cfg["model"]["timestep"] * cfg["output"]["output_res"])
     if pd.Timestamp(last_time) < end - spacing:
@@ -314,7 +316,7 @@ def run_simulation(sim_dir: Path) -> tuple[float, int | None]:
             print(f"  WARNING: results file not found: {nc_path}")
             return float("inf"), n_failed
 
-        cfg = yaml.safe_load((sim_dir / "config.yaml").read_text())
+        cfg = load_config(sim_dir / "config.yaml")
         if cfg.get("xbeach", {}).get("with_xbeach", True):
             n_failed = count_failed_xbeach_calls(sim_dir)
             if n_failed is None:

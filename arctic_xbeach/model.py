@@ -39,6 +39,7 @@ import xarray as xr
 from netCDF4 import Dataset
 import arctic_xbeach.miscellaneous as um
 import arctic_xbeach.diagnostics as dg
+from arctic_xbeach.config_loader import load_config
 import hashlib
 import json
 import subprocess
@@ -169,7 +170,7 @@ class Simulation():
         cwd = os.path.join(self.proj_dir, self.runid)
                     
         with open(os.path.join(cwd, config_file)) as f:
-            cfg = yaml.safe_load(f)
+            cfg = load_config(f.read())  # raises on a duplicate key
             
         self.config = AttrDict(cfg)
                 
