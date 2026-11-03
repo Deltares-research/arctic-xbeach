@@ -27,7 +27,8 @@ model:
 
   # v1.1 options: save / reuse the thermal state at the end of the spin-up (default None = off). XBeach does not run during the
   # spin-up, so the state is the thermal state on the unchanged initial bathymetry. A restart refuses to load if the thermal
-  # config, start time, spin-up length, timestep, forcing or initial grid differ from those the state was made with.
+  # config, start time, spin-up length, timestep, forcing, water levels and waves (storm table) during the spin-up or initial
+  # grid differ from those the state was made with.
   # Relative paths are relative to this folder.
   # spinup_state_out : spinup_state.npz   # write the state when the spin-up has finished
   # spinup_state_in  : spinup_state.npz   # skip the spin-up and continue from this state

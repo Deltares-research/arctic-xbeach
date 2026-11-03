@@ -65,9 +65,10 @@ def test_real_process_runs_without_shell_or_batch_file(sim_and_dir):
     assert not list(work_dir.glob("*.bat"))
 
 
-def test_missing_executable_returns_false_and_logs(sim_and_dir, caplog):
+def test_missing_executable_is_a_configuration_error(sim_and_dir, caplog):
     sim, work_dir = sim_and_dir
     missing = str(work_dir / "no_such_xbeach.exe")
     with caplog.at_level(logging.ERROR, logger=LOGGER):
-        assert sim.start_xbeach(missing, "params.txt", timestep_id=7) is False
+        with pytest.raises(OSError, match="no_such_xbeach"):
+            sim.start_xbeach(missing, "params.txt", timestep_id=7)
     assert any("no_such_xbeach" in r.getMessage() for r in caplog.records)

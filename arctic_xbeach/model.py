@@ -824,17 +824,19 @@ class Simulation():
         
         # Configure hotstart
         writehotstart = 1 if timestep_id + 1 < len(self.xbeach_times) else 0
-        self.last_xbeach_hotstart = bool(self.xbeach_times[timestep_id - 1] and self.xbeach_storms[timestep_id - 1] and timestep_id != 0)  # for the call log
+        # hotstart only from a previous call that succeeded; a failed call has no hotstart files
+        use_hotstart = bool(self.xbeach_success[timestep_id - 1] and self.xbeach_storms[timestep_id - 1] and timestep_id != 0)
+        self.last_xbeach_hotstart = use_hotstart  # for the call log
         hotstart_text = [
             "%% hotstart (during a storm, use the previous xbeach timestep as hotstart for current timestep)\n\n",
             f"writehotstart  = {writehotstart}\n",
-            f"hotstart       = {1 if (self.xbeach_times[timestep_id - 1] and self.xbeach_storms[timestep_id - 1] and timestep_id != 0) else 0}\n",
-            f"hotstartfileno = {1 if (self.xbeach_times[timestep_id - 1] and self.xbeach_storms[timestep_id - 1] and timestep_id != 0) else 0}\n",
+            f"hotstart       = {int(use_hotstart)}\n",
+            f"hotstartfileno = {int(use_hotstart)}\n",
             "\n"
         ]
         
         # Copy hotstart files from previous run if needed
-        if (self.xbeach_times[timestep_id - 1] and self.xbeach_storms[timestep_id - 1] and timestep_id != 0):
+        if use_hotstart:
             previous_folder = os.path.join(self.result_dir, "xb_files/", f"{timestep_id-1:010d}/")
             
             if os.path.exists(previous_folder):
@@ -929,7 +931,8 @@ class Simulation():
         --------------------------
 
         XBeach runs in the destination folder (cwd of the child, so it also works when that is on another drive than the
-        current one). On a nonzero exit code the tail of XBerror.txt (or else of stderr) is logged.
+        current one). On a nonzero exit code the tail of XBerror.txt (or else of stderr) is logged and False is returned.
+        An executable that cannot be started (OSError) is a configuration error and is raised.
 
         returns boolean (True if process was a sucess, False if not)
         """
@@ -942,9 +945,9 @@ class Simulation():
         try:  # stdin closed so that a wrong executable cannot wait for input
             result = subprocess.run([str(xbeach_path)], cwd=work_dir, stdin=subprocess.DEVNULL,
                                     stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
-        except OSError as e:
+        except OSError as e:  # missing or not runnable: a configuration error, stop the run instead of running on without morphology
             logger.error(f"Could not start XBeach executable {xbeach_path}: {e}")
-            return False
+            raise type(e)(f"Could not start the XBeach executable {xbeach_path} (xbeach.version in config.yaml): {e}") from e
 
         if result.returncode != 0:
             error_file = Path(work_dir) / "XBerror.txt"
@@ -1585,7 +1588,7 @@ class Simulation():
 
 
         # get the water level
-        if self.xbeach_times[timestep_id-1] and self.config.xbeach.with_xbeach:
+        if self.xbeach_success[timestep_id-1] and self.config.xbeach.with_xbeach:  # previous step: a successful call (a failed one has no output)
             
             # construct path to xbeach output in destination folder
             destination_folder = os.path.join(self.result_dir, "xb_files/", (10 - len(str(int(timestep_id-1)))) * '0' + str(int(timestep_id-1)) + '/')
@@ -2663,6 +2666,7 @@ class NCAppender:
             
             self.ds.setncattr("Version", __version__)
             self.ds.setncattr("Revision", git_revision())
+            self.ds.setncattr("time_label", "end_of_step")  # records are labelled at the end of their model step (older files: start of step)
             
             # Add creation date
             self.ds.setncattr("Date_created", datetime.now().strftime('%Y-%m-%dT%H:%M:%SZ'))

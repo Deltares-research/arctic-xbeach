@@ -28,6 +28,7 @@ def test_records_are_labelled_at_the_end_of_the_step(tmp_path):
     results = short_run(tmp_path / "run")
     with xr.open_dataset(results / "results.nc") as ds:
         time, step = pd.to_datetime(ds.time.values), ds.timestep_id.values
+        assert ds.attrs["time_label"] == "end_of_step"  # tells new files from older ones (labelled at the start of the step)
     assert len(time) == 48
     assert time[0] == T0 + pd.Timedelta(hours=1)  # the state after the first hour, not at the start
     assert np.all(np.diff(time) == pd.Timedelta(hours=1))

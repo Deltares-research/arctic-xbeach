@@ -30,8 +30,8 @@ the observed bluff edge and shoreline positions with the thermal parameters fixe
   are both normalised at 2012-07-11. Bluff edge: first crossing of z = 13.2 m; shoreline: first crossing of z = +2.0 m; 1-day smoothing.
 * The 10-year thermal spin-up is computed once. The driver builds `RUN_ROOT_DIR/template`, runs it without XBeach to the end of the
   spin-up, and saves `RUN_ROOT_DIR/spinup_state.npz` (`model.spinup_state_out`). Every trial loads it (`model.spinup_state_in`), so a trial
-  only runs the XBeach period. The state file stores a hash of the thermal config, the start time, spin-up length, forcing during the spin-up
-  and the initial grid; a trial refuses to start if any differ. Delete `spinup_state.npz` after changing thermal parameters, solver options,
+  only runs the XBeach period. The state file stores a hash of the thermal config, the start time, spin-up length, forcing during the spin-up,
+  the water levels and waves (storm table) during the spin-up and the initial grid; a trial refuses to start if any differ. Delete `spinup_state.npz` after changing thermal parameters, solver options,
   forcing or bathymetry. `results.nc` of a trial then contains the post spin-up period only.
 * Output in `RUN_ROOT_DIR`: `template/`, `_spinup/`, `spinup_state.npz`, `optuna_study.db`, trial folders (`metrics.txt`,
   `calibration_timeseries.png`, `xbeach_calls.csv`, `conservation_log.csv` in `results/`), `calibration_prints.txt`, `calibration_results.csv`, `convergence.png`.
@@ -57,6 +57,10 @@ completed trials at which the best-so-far came within 1 % and 0.1 % of the final
 
 ## What differs from the drivers used for the published studies (`_scripts/` on the run drive)
 
-The objective, parameter ranges, penalty and metrics are unchanged. Removed: the unused `sample_params`, `apply_parameter_constraints`
+The objective, parameter ranges, penalty and metrics are unchanged in definition, but the code now behaves differently in three ways, so the
+published reference values (thermal trial 869: 1.0589 K, trial 490: 0.8203 K; coupled trial 88: 4.1222 m) are not reproduced exactly:
+output time labels are at the end of the model step (thermal objective: each observation is paired with the state one step earlier than before;
+trial 490 re-scored 0.82024 K to 0.82011 K); the coupled series include the XBeach records of storm calls on an inter-storm step
+(`xbeach_times` 2) and no longer include failed calls; and a nonzero exit code or a results.nc that stops early is not scored (`inf`). Removed: the unused `sample_params`, `apply_parameter_constraints`
 and `worker` functions; the `.bat`/conda launch (replaced by `sys.executable`); the hard-coded `d:\` and `e:\` paths; the geopandas reading of two
 small CSV files (plain pandas, same columns and casts). Added: seed, starting set, spin-up restart, v1.1 options, error messages for failed scoring.

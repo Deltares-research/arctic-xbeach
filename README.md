@@ -138,7 +138,7 @@ python main.py examples/case_studies/barter_island
 | `thermal.conduction_form` | `nodal` (default), `flux` | `flux` is the conservative finite-volume form with harmonic-mean conductivity on the cell faces |
 | `thermal.latent_heat_form` | `per_mass` (default), `volumetric` | `volumetric` uses `L * nb * rho_water / rho_soil` per kg of soil instead of `L * nb` |
 | `data.era5_flux_shift_hours` | `0` (default), `1` | `1` shifts the ERA5 `mean_surface_*` fluxes back one hour (the label is the end of the averaging hour) |
-| `model.spinup_state_out` / `model.spinup_state_in` | path or `None` | save the thermal state at the end of the spin-up, and continue from it (refuses to load if thermal config, start time, forcing or grid differ) |
+| `model.spinup_state_out` / `model.spinup_state_in` | path or `None` | save the thermal state at the end of the spin-up, and continue from it (refuses to load if thermal config, start time, forcing, water levels and waves (storm table) during the spin-up, or grid differ) |
 | `output.log_xbeach_calls` / `output.log_conservation` | `true` (default) / `false` | write `xbeach_calls.csv` and `conservation_log.csv` to the result folder; a summary goes to the end of `run.log` |
 
 The calibration drivers are in [`calibration/`](calibration/README.md).
