@@ -2274,6 +2274,14 @@ class Simulation():
         forcing = np.ascontiguousarray(self.forcing_data.iloc[:n_spin].select_dtypes("number").to_numpy(dtype=float))
         return thermal, context, hashlib.sha256(forcing.tobytes()).hexdigest()
 
+    def _spinup_hydro_hash(self, n_spin):
+        """Hash of the storm table during the spin-up: water level and the wave height and period (they set the wet/dry
+        boundary and the water heat transfer), as used by the model after the sensitivity terms."""
+        hydro = np.ascontiguousarray([
+            [self.water_levels[t], *(self.conditions[t][k] for k in ("Hs(m)", "Tp(s)", "WL(m)"))] for t in range(n_spin)
+        ], dtype=float).reshape(n_spin, 4)
+        return hashlib.sha256(hydro.tobytes()).hexdigest()
+
     def save_spinup_state(self, path, n_spin):
         """Save the model state at the end of the spin-up (call after the last spin-up timestep, n_spin = number of
         spin-up timesteps). Everything needed to continue bit-identically at timestep n_spin goes into one npz file."""
@@ -2287,7 +2295,7 @@ class Simulation():
             next_timestamp=str(self.timestamps[n_spin]) if n_spin < len(self.timestamps) else None,
             thermal=thermal, thermal_hash=self._hash_json(thermal),
             context=context, context_hash=self._hash_json(context), forcing_hash=forcing_hash,
-            arrays=list(arrays), scalars=scalars,
+            hydro_hash=self._spinup_hydro_hash(n_spin), arrays=list(arrays), scalars=scalars,
         )
         tmp = path.with_name(path.name + ".tmp")
         with open(tmp, "wb") as f:  # file object: np.savez must not add a suffix
@@ -2298,8 +2306,9 @@ class Simulation():
     def load_spinup_state(self, path, n_spin):
         """Restore a state saved by save_spinup_state and return the timestep id at which the main loop continues.
 
-        Raises ValueError (nothing is changed) if the thermal config, the run context, the forcing during the
-        spin-up or the initial grid differ from those stored in the file."""
+        Raises ValueError (nothing is changed) if the thermal config, the run context, the forcing and the water levels
+        and waves (storm table) during the spin-up, or the initial grid differ from those stored in the file. A state
+        made before the storm table was checked has no hydro_hash: it loads, with a warning."""
         path = Path(path)
         if not path.exists():
             raise FileNotFoundError(f"Spin-up state file not found: {path}")
@@ -2322,6 +2331,11 @@ class Simulation():
             problems.append(f"run context differs (keys: {', '.join(diff)})")
         if forcing_hash != meta["forcing_hash"]:
             problems.append("the forcing data during the spin-up differ from those used to make the state")
+        if "hydro_hash" not in meta:
+            logger.warning(f"Spin-up state {path} has no hydro hash (made before the water levels and waves were "
+                           f"checked): the hydro forcing during the spin-up could not be verified")
+        elif self._spinup_hydro_hash(n_spin) != meta["hydro_hash"]:
+            problems.append("the water levels / waves during the spin-up differ from those used to make the state")
         if not (np.array_equal(arrays["xgr"], self.xgr) and np.array_equal(arrays["zgr"], self.zgr)):
             problems.append("the initial grid/bathymetry differs from the one stored in the state")
         if meta["n_spinup_steps"] != n_spin:

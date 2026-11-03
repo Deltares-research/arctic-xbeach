@@ -3,10 +3,13 @@
 A 61-day spin-up plus 3 days without XBeach on a 7-node transect with a 40-node thermal grid. Synthetic forcing, see run_helpers.py.
 Run from the repository root with:  python -m pytest tests -q
 """
+import json
+import logging
 import os
 from pathlib import Path
 
 import numpy as np
+import pandas as pd
 import pytest
 
 from run_helpers import build_run, reset_logger, run_main
@@ -82,3 +85,45 @@ def test_other_end_time_is_allowed(full_and_restart, tmp_path):
     longer = build_run(tmp_path / "longer", time_end="06-07-2010", spinup_state_in=str(state))
     out = run_main(longer, REPO_ROOT)
     assert np.isfinite(out["enthalpy_matrix"]).all()
+
+
+def test_restart_refuses_changed_spinup_water_levels(full_and_restart, tmp_path):
+    """The storm table (water levels, waves) sets the wet/dry boundary and the water heat transfer during the spin-up."""
+    _, _, state, _ = full_and_restart
+    changed = build_run(tmp_path / "changed_wl", spinup_state_in=str(state))
+    storms = pd.read_csv(changed / "storms.csv", parse_dates=["time"])
+    spinup = (storms["time"] >= "2010-05-01") & (storms["time"] < "2010-06-01")
+    storms.loc[spinup, "WL(m)"] += 5.0
+    storms.to_csv(changed / "storms.csv", index=False)
+    with pytest.raises(ValueError, match="water levels"):
+        run_main(changed, REPO_ROOT)
+
+
+def test_water_levels_after_the_spinup_are_not_part_of_the_check(full_and_restart, tmp_path):
+    _, _, state, _ = full_and_restart
+    changed = build_run(tmp_path / "changed_wl_late", spinup_state_in=str(state))
+    storms = pd.read_csv(changed / "storms.csv", parse_dates=["time"])
+    storms.loc[storms["time"] >= "2010-07-01", "WL(m)"] += 5.0  # the run starts 01-05 and the spin-up is 61 days
+    storms.to_csv(changed / "storms.csv", index=False)
+    out = run_main(changed, REPO_ROOT)
+    assert np.isfinite(out["enthalpy_matrix"]).all()
+
+
+def test_state_without_hydro_hash_loads_with_a_warning(full_and_restart, tmp_path, caplog):
+    """A state made before the storm table was part of the check can still be used, but the user is told."""
+    _, _, state, _ = full_and_restart
+    old_state = tmp_path / "old_state.npz"
+    with np.load(state, allow_pickle=False) as z:
+        contents = {k: z[k] for k in z.files}
+    meta = json.loads(str(contents["__meta__"]))
+    assert "hydro_hash" in meta  # saved by the current code
+    del meta["hydro_hash"]
+    contents["__meta__"] = np.array(json.dumps(meta))
+    with open(old_state, "wb") as f:  # file object: np.savez must not add a suffix
+        np.savez(f, **contents)
+
+    restart = build_run(tmp_path / "old_format", spinup_state_in=str(old_state))
+    with caplog.at_level(logging.WARNING, logger="arctic_xbeach.model"):
+        out = run_main(restart, REPO_ROOT)
+    assert np.isfinite(out["enthalpy_matrix"]).all()
+    assert any("hydro" in r.getMessage() and "not be verified" in r.getMessage() for r in caplog.records if r.levelno == logging.WARNING)
