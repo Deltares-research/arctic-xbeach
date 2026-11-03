@@ -923,10 +923,13 @@ class Simulation():
         params_path: str
             string containing the file path to the params.txt file from the project directory
         batch_fname: str
-            name used for the generated batch file
+            no longer used (the executable is started directly, without a shell or batch file); kept for compatibility
         timestep_id: int
             timestep ID to determine the destination folder
         --------------------------
+
+        XBeach runs in the destination folder (cwd of the child, so it also works when that is on another drive than the
+        current one). On a nonzero exit code the tail of XBerror.txt (or else of stderr) is logged.
 
         returns boolean (True if process was a sucess, False if not)
         """
@@ -936,17 +939,23 @@ class Simulation():
         else:
             work_dir = self.cwd
             
-        with open(os.path.join(work_dir, batch_fname), "w") as f:
-            f.write(f'cd "{work_dir}"\n')
-            f.write(f'call "{xbeach_path}"')
-        
-        # Command to run XBeach
-        command = [str(os.path.join(work_dir, batch_fname))]
+        try:  # stdin closed so that a wrong executable cannot wait for input
+            result = subprocess.run([str(xbeach_path)], cwd=work_dir, stdin=subprocess.DEVNULL,
+                                    stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+        except OSError as e:
+            logger.error(f"Could not start XBeach executable {xbeach_path}: {e}")
+            return False
 
-        # # Call XBeach using subprocess
-        return_code = subprocess.run(command, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE).returncode
+        if result.returncode != 0:
+            error_file = Path(work_dir) / "XBerror.txt"
+            if error_file.exists() and error_file.stat().st_size > 0:
+                source, text = "XBerror.txt", error_file.read_text(errors="replace")
+            else:
+                source, text = "stderr", (result.stderr or b"").decode(errors="replace")
+            tail = "\n".join(text.strip().splitlines()[-10:])
+            logger.warning(f"XBeach exited with code {result.returncode} in {work_dir}; last lines of {source}:\n{tail}")
 
-        return return_code == 0
+        return result.returncode == 0
     
     def copy_xb_output_to_result_dir(self, timestep_id, fp_xbeach_output="xboutput.nc"):
         
