@@ -348,15 +348,22 @@ def run_simulation(sim_dir: Path) -> float:
     return rmse_weight
 
 
-def objective(trial: optuna.Trial) -> float:
+def sample_params(trial: optuna.Trial) -> dict:
+    """All parameters of one trial: the structured ones, then the remaining (fixed or plain) entries of PARAM_RANGES.
+    With optuna.trial.FixedTrial(trial.params) this rebuilds the parameter set of a finished trial."""
     params = suggest_thermal_params(trial)
-    for k, v in PARAM_RANGES.items():  # remaining (fixed or plain) parameters
+    for k, v in PARAM_RANGES.items():
         if k in params:
             continue
         if isinstance(v[0], int) and isinstance(v[1], int):
             params[k] = trial.suggest_int(k, int(v[0]), int(v[1]))
         else:
             params[k] = trial.suggest_float(k, float(v[0]), float(v[1]))
+    return params
+
+
+def objective(trial: optuna.Trial) -> float:
+    params = sample_params(trial)
 
     work_dir, sim_dir = hpc.trial_dirs(RUN_ROOT_DIR, SCRATCH, trial.number)  # the same folder unless SCRATCH is set
     try:
