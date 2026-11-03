@@ -30,6 +30,8 @@ Repository: https://github.com/deltares-research/arctic-xbeach
 # IMPORTS
 # =============================================================================
 import datetime
+import re
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -292,6 +294,20 @@ def linear_interp_z(abs_xgr, abs_zgr, temp_matrix, abs_xgr_new, abs_zgr_new, wat
         new_temperature_values[i,:] = new_temp_array
     
     return new_temperature_values
+
+# =============================================================================
+# PATH UTILITIES
+# =============================================================================
+
+def resolve_path(path, base_dir):
+    """Return path as a string: unchanged if absolute, else joined to base_dir.
+
+    A Windows drive path (d:/x or C:/x with either slash) counts as absolute on Linux too, so one config.yaml can hold either form."""
+    path = str(path)
+    if Path(path).is_absolute() or path.startswith('/') or re.match(r'^[A-Za-z]:[\\/]', path):
+        return str(Path(path))
+    return str(Path(base_dir) / path)
+
 
 # =============================================================================
 # DATETIME UTILITIES

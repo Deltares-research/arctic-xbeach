@@ -6,12 +6,14 @@ corrupts the netCDF file of the first run ("NetCDF: HDF error"). The lock is hel
 released when the process ends in any way (finished, exception, killed, terminal closed) and a lock file left behind
 never blocks a later run. The file itself only records who holds the lock and may be deleted when no run is active.
 """
+import errno
 import os
 import socket
 from datetime import datetime
 from pathlib import Path
 
 LOCK_NAME   = "run.lock"
+NO_LOCK_ERRNOS = (errno.ENOLCK, errno.EOPNOTSUPP)    # POSIX locks missing on the filesystem (e.g. some NFS mounts), not a second run
 LOCK_OFFSET = 4096      # lock one byte past the text, so a second process can still read who holds the lock (Windows locks are mandatory)
 
 
@@ -38,7 +40,12 @@ def acquire_run_lock(run_dir):
     fh = os.fdopen(os.open(path, os.O_RDWR | os.O_CREAT), "r+b")    # no truncation: the holder's text stays readable
     try:
         _try_lock(fh)
-    except OSError:
+    except OSError as err:
+        if err.errno in NO_LOCK_ERRNOS:
+            fh.close()
+            raise RuntimeError(f"The filesystem of {Path(run_dir)} does not support file locks ({err.strerror}), so the one-run-per-folder "
+                               f"check cannot work there. Use a run folder on a local or scratch disk, or one on a network "
+                               f"filesystem that supports locking.")
         os.lseek(fh.fileno(), 0, os.SEEK_SET)
         text = os.read(fh.fileno(), 512)    # unbuffered: a buffered read would reach the locked byte and fail on Windows
         holder = text.decode("utf-8", errors="replace").strip() or "holder unknown"

@@ -1,7 +1,7 @@
 # data parameters
 data:
-  forcing_data_path : 'examples\simple\database\era5.csv'
-  storm_data_path   : 'examples\simple\database\storms.csv'
+  forcing_data_path : 'examples/simple/database/era5.csv'
+  storm_data_path   : 'examples/simple/database/storms.csv'
 
 # model settings
 model:
@@ -53,7 +53,7 @@ xbeach:
 
   # general settings
   with_xbeach : True  # include the xbeach module in the model, default true
-  version     : d:\software\XBeach\releases\halloween\XBeach_1.24.6057_Halloween_win64_netcdf\xbeach.exe
+  version     : d:\software\XBeach\releases\halloween\XBeach_1.24.6057_Halloween_win64_netcdf\xbeach.exe  # on Linux: /path/to/xbeach
 
   # physical processes:
   with_wind     : False  # include wind in the xbeach model
