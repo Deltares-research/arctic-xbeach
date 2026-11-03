@@ -13,7 +13,8 @@ RunDiagnostics collects, for one simulation:
   * a summary block for run.log
 
 Both CSV files are written to the run's result folder. They are switched with output.log_xbeach_calls and
-output.log_conservation in config.yaml (default: both on). Nothing here feeds back into the model.
+output.log_conservation in config.yaml (default: both on). Nothing here feeds back into the model. The "time" of a row is the
+start of the XBeach call (the timestep it covers), unlike the end-of-step labels of results.nc.
 
 Conventions of the heat budget
   * Stored heat of a thermal column is rho * (H - Cs * T_melt) [J/m3] integrated over elevation z with trapezoid

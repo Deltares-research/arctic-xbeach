@@ -219,10 +219,11 @@ class Simulation():
         
         # Define output timing. Optional output.output_start / output.output_end (dates, as model.time_start) limit the
         # output to a window, e.g. the observation period of a thermal calibration; the default is the whole run.
+        # The window applies to the record times, which are the ends of the steps (timestamps + dt, see write_output).
         self.temp_output_ids = np.arange(0, len(self.timestamps), self.config.output.output_res)
         out_start, out_end = self.config.output.get('output_start'), self.config.output.get('output_end')
         if out_start is not None or out_end is not None:
-            t_out = self.timestamps[self.temp_output_ids]
+            t_out = self.timestamps[self.temp_output_ids] + pd.Timedelta(hours=self.dt)
             keep = np.ones(len(t_out), dtype=bool)
             if out_start is not None:
                 keep &= t_out >= pd.to_datetime(out_start, dayfirst=True)
@@ -2393,8 +2394,8 @@ class Simulation():
         else:
             i_xb = 0
 
-        # Determine times
-        t_now = float((self.timestamps[timestep_id] - self.timestamps[0]) / pd.Timedelta("1s"))
+        # Determine times: output is written after the step, so the record is labelled at the end of the step
+        t_now = float((self.timestamps[timestep_id] + pd.Timedelta(hours=self.dt) - self.timestamps[0]) / pd.Timedelta("1s"))
         t_rel = t_now - self._t0_seconds
 
         # --- hydrodynamics on xbeach grid ---
@@ -2510,11 +2511,14 @@ class Simulation():
             layers (list, optional): list of the layers to save. Defaults to [].
             heat_fluxes (list, optional): list of heat fluxes to save. Defaults to [].
             write (bool, optional): whether or not to write. Defaults to False.
+
+        Called after the thermal update of the step, so the row is labelled at the end of the step (like results.nc): the
+        temperatures are the state at that time, air temperature and fluxes are the values applied over the step.
         """
         # define colnames
         col_names = ['time'] + ['air_temp[K]'] + [f'temp_{layer}m[K]' for layer in layers] + heat_fluxes
-        
-        values = [self.timestamps[timestep_id], self.current_air_temp]
+
+        values = [self.timestamps[timestep_id] + pd.Timedelta(hours=self.dt), self.current_air_temp]
         
         # loop through layers to find corresponding temperature
         for layer in layers:
@@ -2619,6 +2623,10 @@ class Simulation():
 
 
 
+TIME_COMMENT = ("End of the model timestep: ground and bed states are the states at this time; forcing and heat flux "
+                "fields are the values applied over the timestep that ends here.")
+
+
 class NCAppender:
     """
     Create results.nc (once) and append a single time-slice each timestep.
@@ -2661,9 +2669,11 @@ class NCAppender:
             v = self.ds.createVariable("time", "f8", ("time",))     # seconds since tstart (thermal)
             v.units = f"seconds since {tstart}"
             v.calendar = "standard"
+            v.comment = TIME_COMMENT
             v = self.ds.createVariable("time_xbeach", "f8", ("time_xbeach",))     # seconds since tstart (xbeach)
             v.units = f"seconds since {tstart}"
             v.calendar = "standard"
+            v.comment = TIME_COMMENT
             v = self.ds.createVariable("xgr", "f4", ("xgr",))
             v[:] = xgr.astype("f4")
             v.units = "m"
