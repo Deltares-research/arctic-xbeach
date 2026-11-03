@@ -177,12 +177,13 @@ def prepare_template() -> Path:
     return template
 
 
-def launch(sim_dir: Path):
-    """Run main.py on sim_dir in a child process of the current interpreter."""
+def launch(sim_dir: Path) -> int:
+    """Run main.py on sim_dir in a child process of the current interpreter and return its exit code."""
     script = sim_dir / "run_simulation_subprocess.py"
     script.write_text(CHILD_SCRIPT.format(repo=str(REPO_DIR), sim_dir=str(sim_dir)))
     result = subprocess.run([sys.executable, str(script)], cwd=str(sim_dir))
     print(f" => child process exit code {result.returncode}: {sim_dir.name}")  # a native crash leaves only this
+    return result.returncode
 
 
 def ensure_spinup_state(template: Path) -> Path:
@@ -216,7 +217,8 @@ def ensure_spinup_state(template: Path) -> Path:
 
     print(f"Computing the spin-up once ({spin_years:g} years) -> {state}")
     t0 = time.time()
-    launch(run_dir)
+    if launch(run_dir) != 0:
+        raise SystemExit(f"Spin-up run failed (nonzero exit code); see {run_dir / 'run.log'}")
     if not state.exists():
         raise SystemExit(f"Spin-up run did not write {state}; see {run_dir / 'run.log'}")
     print(f"Spin-up done in {(time.time() - t0) / 60:.1f} min")
@@ -245,13 +247,32 @@ def find_bluff_edge(x, z, bluff_elevation=13.2):
     return find_shoreline(x, z, msl=bluff_elevation, method="simple")
 
 
+def results_end_problem(sim_dir: Path, last_time) -> str | None:
+    """None if the last record of the thermal time variable reaches the end of the scored period, else the reason.
+
+    The scored period ends at CALIB_END or model.time_end of the trial config, whichever is earlier. The XBeach records
+    (time_xbeach) are only written at XBeach calls and can stop weeks before the end, so the thermal records are checked. They are
+    labelled at the end of their step and written every output_res steps: a complete run ends within one record spacing of it."""
+    cfg = yaml.safe_load((sim_dir / "config.yaml").read_text())
+    end = min(pd.to_datetime(cfg["model"]["time_end"], dayfirst=True), pd.Timestamp(CALIB_END))
+    spacing = pd.Timedelta(hours=cfg["model"]["timestep"] * cfg["output"]["output_res"])
+    if pd.Timestamp(last_time) < end - spacing:
+        return f"results.nc stops at {pd.Timestamp(last_time)}, before the end of the scored period ({end})"
+    return None
+
+
 def run_simulation(sim_dir: Path) -> float:
-    """Run one trial in a child process and return the combined RMSE (inf if the run or the scoring failed)."""
-    launch(sim_dir)
+    """Run one trial in a child process and return the combined RMSE (inf if the run or the scoring failed).
+
+    A child with a nonzero exit code, or a results.nc that stops before the end of the scored period, is not scored."""
+    returncode = launch(sim_dir)
     print(f" => simulation finished: {sim_dir.name}")
 
     nc_path = sim_dir / "results" / "results.nc"
     try:
+        if returncode != 0:  # a killed run can leave a partial results.nc
+            print(f"  => run failed (exit code {returncode}), not scored: {sim_dir.name}")
+            return float("inf")
         if not nc_path.exists():
             print(f"  WARNING: results file not found: {nc_path}")
             return float("inf")
@@ -260,6 +281,11 @@ def run_simulation(sim_dir: Path) -> float:
             with xr.open_dataset(nc_path, engine="netcdf4") as ds:
                 zb_xbeach, x_xbeach = ds["zb_xbeach"].load(), ds["xgr"].load()
                 time_datetime = pd.to_datetime(ds["time_xbeach"].values)
+                last_time = pd.to_datetime(ds["time"].values[-1])
+        problem = results_end_problem(sim_dir, last_time)
+        if problem:
+            print(f"  => run incomplete, not scored: {problem}")
+            return float("inf")
         n_times = len(time_datetime)
 
         shoreline_pos, bluff_pos = np.zeros(n_times), np.zeros(n_times)

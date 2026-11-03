@@ -9,7 +9,8 @@ runs on Windows and Linux).
 Each trial: copy BASE_SIM_DIR, write the sampled thermal parameters into its config.yaml, run main.py (thermal-only: with_xbeach is
 False in the base config), compare the modelled ground temperature in the column x-index 1 against the borehole record
 (BI_T-1, 17 depths, 0 to 4.25 m) and return the mean RMSE over the depths. A trial whose surface temperature never reaches 0.01 K
-(frozen all the time, the column did not thaw) gets its RMSE multiplied by 10. A failed run returns inf.
+(frozen all the time, the column did not thaw) gets its RMSE multiplied by 10. A failed run returns inf: a child process with a
+nonzero exit code, or a results.nc that stops before the end of the scored period, is not scored.
 
 Run:  python calibration/run_thermal_calibration.py        (see calibration/README.md)
 """
@@ -174,6 +175,21 @@ def compute_metrics(model_time, model_temp, obs_time, obs_temp):
     return rmse, mae, (model_vals - obs_vals).mean()
 
 
+def results_end_problem(sim_dir: Path, last_time) -> str | None:
+    """None if the last results.nc record reaches the end of the scored period, else the reason.
+
+    The scored period ends at model.time_end of the trial config or at the end of OUTPUT_WINDOW, whichever is earlier. Records are
+    labelled at the end of their step and written every output_res steps, so a complete run ends within one record spacing of it."""
+    cfg = yaml.safe_load((sim_dir / "config.yaml").read_text())
+    end = pd.to_datetime(cfg["model"]["time_end"], dayfirst=True)
+    if OUTPUT_WINDOW is not None:
+        end = min(end, pd.to_datetime(OUTPUT_WINDOW[1], dayfirst=True))
+    spacing = pd.Timedelta(hours=cfg["model"]["timestep"] * cfg["output"]["output_res"])
+    if pd.Timestamp(last_time) < end - spacing:
+        return f"results.nc stops at {pd.Timestamp(last_time)}, before the end of the scored period ({end})"
+    return None
+
+
 def to_native_datetime(dt):
     """cftime / list of cftime to datetime.datetime."""
     if hasattr(dt, "to_datetime"):
@@ -207,6 +223,9 @@ def run_simulation(sim_dir: Path) -> float:
 
     nc_path = sim_dir / "results" / "results.nc"
     try:
+        if result.returncode != 0:  # a killed run can leave a partial results.nc
+            print(f"  => run failed (exit code {result.returncode}), not scored: {sim_dir.name}")
+            return float("inf")
         df_val = pd.read_csv(OBSERVATION_CSV, parse_dates=["date_time"])
 
         with POSTPROC_LOCK, Dataset(nc_path, "r") as nc:
@@ -215,6 +234,11 @@ def run_simulation(sim_dir: Path) -> float:
             time_pd = pd.to_datetime(np.array([to_native_datetime(t) for t in time_dt]))
             ground_temp = nc.variables["ground_temperature_distribution"][:]  # (nt, nx, nz)
             abs_zgr = nc.variables["abs_zgr"][:][0, 1, :]  # column of grid point 1, as in the published driver
+
+        problem = results_end_problem(sim_dir, time_pd[-1])
+        if problem:
+            print(f"  => run incomplete, not scored: {problem}")
+            return float("inf")
 
         depth_model = (abs_zgr - abs_zgr[0]) * -1
         depth_map = {f"dpth{d}cm": d / 100 + SENSOR_DEPTH_OFFSET for d in range(0, 426, 25) if d not in (75,)}  # 0, 25, 50, 100, ..., 425 cm (17 depths)
