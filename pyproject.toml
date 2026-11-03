@@ -11,7 +11,7 @@ license = {text = "GPL-3.0"}
 authors = [
     {name = "Kees Nederhoff", email = "kees.nederhoff@deltares-usa.us"},
 ]
-requires-python = ">=3.9"
+requires-python = ">=3.12"  # xbTools uses nested same-quote f-strings (PEP 701)
 dependencies = [
     "numpy>=1.21",
     "pandas>=1.3",
@@ -22,7 +22,11 @@ dependencies = [
     "pyyaml>=5.4",
     "shapely>=1.8",
     "psutil>=5.8",
+    "xbTools @ git+https://github.com/openearth/xbeach-toolbox.git@da79e6ab3f495a23cf08e70cf38296a7da11822b",
 ]
+
+[project.optional-dependencies]
+calibration = ["optuna>=4.6"]
 
 [project.urls]
 Repository = "https://github.com/deltares-research/arctic-xbeach"

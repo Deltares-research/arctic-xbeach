@@ -35,6 +35,8 @@ cd arctic-xbeach
 
 ### Step 2: Install Python dependencies
 
+Python 3.12 or newer is required. On Windows or Linux you can also create the environment from `environment.yml` (`conda env create -f environment.yml`) and then run `pip install -e .` from the repository root. Add the Optuna calibration drivers with `pip install -e ".[calibration]"`.
+
 ```bash
 # Install package in editable mode
 pip install -e .

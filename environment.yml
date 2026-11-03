@@ -1,0 +1,22 @@
+# Portable environment for Windows and Linux (HPC).
+# Create:  conda env create -f environment.yml
+# Then, from the repo root:  conda activate arctic-xbeach && pip install -e .
+name: arctic-xbeach
+channels:
+  - conda-forge
+dependencies:
+  - python=3.12
+  - numpy
+  - scipy
+  - pandas
+  - xarray
+  - netcdf4
+  - matplotlib
+  - pyyaml
+  - shapely
+  - psutil
+  - optuna=4.6
+  - pytest
+  - pip
+  - pip:
+      - "xbTools @ git+https://github.com/openearth/xbeach-toolbox.git@da79e6ab3f495a23cf08e70cf38296a7da11822b"
