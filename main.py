@@ -30,6 +30,11 @@ Repository: https://github.com/deltares-research/arctic-xbeach
 # IMPORTS
 # =============================================================================
 import os
+
+# Set before numpy loads. OpenBLAS otherwise reserves about 1.5 GB per process on a 36-thread machine, and 8 parallel trials
+# would each try to use all threads. OpenMP is left alone because XBeach inherits this environment.
+os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
+
 from pathlib import Path
 import sys
 import time

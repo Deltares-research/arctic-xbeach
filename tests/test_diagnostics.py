@@ -4,6 +4,8 @@ The grid update is driven with a fake XBeach output file (erosion and deposition
 """
 import csv
 import os
+import subprocess
+import sys
 from pathlib import Path
 
 import numpy as np
@@ -186,3 +188,12 @@ def test_summary_block_and_call_log(sims, tmp_path):
     with open(Path(a.result_dir) / "xbeach_calls.csv", newline="") as f:
         rows = list(csv.DictReader(f))
     assert [r["reason"] for r in rows] == ["storm", "inter", "both"] and list(rows[0].keys()) == dg.CALL_COLUMNS
+
+
+def test_main_limits_openblas_threads():
+    """Importing main first, as the calibration child scripts do, limits OpenBLAS unless the user set it."""
+    code = "import os; import main; print(os.environ['OPENBLAS_NUM_THREADS'])"
+    env = {k: v for k, v in os.environ.items() if k != "OPENBLAS_NUM_THREADS"}
+    assert subprocess.run([sys.executable, "-c", code], cwd=REPO_ROOT, env=env, capture_output=True, text=True).stdout.strip() == "1"
+    env["OPENBLAS_NUM_THREADS"] = "4"
+    assert subprocess.run([sys.executable, "-c", code], cwd=REPO_ROOT, env=env, capture_output=True, text=True).stdout.strip() == "4"
