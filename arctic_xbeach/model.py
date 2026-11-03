@@ -2555,8 +2555,8 @@ class Simulation():
         else:
             
             # add temperature and heat fluxs to dataframe
-            self.temperature_timeseries = self.temperature_timeseries._append(
-                dict(zip(col_names, values)), ignore_index=True
+            self.temperature_timeseries = pd.concat(
+                [self.temperature_timeseries, pd.DataFrame([dict(zip(col_names, values))])], ignore_index=True
             )
                 
         # write output at final timestep

@@ -9,7 +9,7 @@ dependencies:
   - python=3.12
   - numpy
   - scipy
-  - pandas
+  - pandas>=2,<3
   - xarray
   - netcdf4
   - matplotlib
