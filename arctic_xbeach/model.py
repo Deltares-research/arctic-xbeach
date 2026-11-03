@@ -1115,10 +1115,7 @@ class Simulation():
             self.nb_matrix = np.tile(self.nb_distr, (N, 1))
             
         # calculate / read in density
-        if self.config.thermal.rho_soil == "None":
-            self.soil_density_matrix = self.nb_matrix * self.config.thermal.rho_water + (1 - self.nb_matrix) * self.config.thermal.rho_particle
-        else:
-            self.soil_density_matrix = np.ones(self.nb_matrix.shape) * self.config.thermal.rho_soil
+        self.soil_density_matrix = self._soil_density(self.nb_matrix)
         
         # using the states, the initial enthalpy can be determined. The enthalpy matrix is used as the 'preserved' quantity, and is used to numerically solve the
         # heat balance equation. Enthalpy formulation from Ravens et al. (2023).
@@ -1129,6 +1126,12 @@ class Simulation():
         self.latent_matrix = self._latent_heat_matrix(self.nb_matrix, self.soil_density_matrix)
 
         return None
+
+    def _soil_density(self, nb):
+        """Soil density [kg/m3] for porosity nb (scalar or array): the fixed config value if set, else from porosity."""
+        if self.config.thermal.rho_soil == "None":
+            return nb * self.config.thermal.rho_water + (1 - nb) * self.config.thermal.rho_particle
+        return np.ones(np.shape(nb)) * self.config.thermal.rho_soil
 
     def _get_option(self, name, default, allowed):
         """Read a string option from config.thermal and validate it. The default is the legacy (v1.0) form."""
@@ -1799,8 +1802,8 @@ class Simulation():
             
             elif self.config.thermal.grid_interpolation == "linear_interp_z":
                 
-                # Compute density
-                rho_value = self.config.thermal.nb_max * self.config.thermal.rho_water + (1 - self.config.thermal.nb_max) * self.config.thermal.rho_particle
+                # Compute density (same rule as the solver uses to interpret the enthalpy)
+                rho_value = self._soil_density(self.config.thermal.nb_max)
                 
                 # From denisty, compute specific heat
                 Cs_value = self.config.thermal.c_soil_frozen / rho_value
