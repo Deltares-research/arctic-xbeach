@@ -184,26 +184,33 @@ def compute_rmse_mae(obs_vals, model_vals):
     return np.sqrt(np.mean((obs_vals - model_vals) ** 2)), np.mean(np.abs(obs_vals - model_vals))
 
 
-def compute_metrics(model_time, model_temp, obs_time, obs_temp):
-    """RMSE, MAE and bias of the model at the observation times (nearest model time)."""
+def compute_metrics_n(model_time, model_temp, obs_time, obs_temp):
+    """RMSE, MAE, bias and number of valid pairs of the model at the observation times (nearest model time)."""
     df_model = pd.DataFrame({"time": pd.to_datetime(model_time), "temp": model_temp}).sort_values("time")
     df_obs = pd.DataFrame({"time": pd.to_datetime(obs_time), "temp": obs_temp}).sort_values("time")
     merged = pd.merge_asof(df_obs, df_model, on="time", direction="nearest", suffixes=("_obs", "_model"))
     valid = ~pd.isnull(merged["temp_obs"]) & ~pd.isnull(merged["temp_model"])
     obs_vals, model_vals = merged.loc[valid, "temp_obs"], merged.loc[valid, "temp_model"]
     rmse, mae = compute_rmse_mae(obs_vals, model_vals)
-    return rmse, mae, (model_vals - obs_vals).mean()
+    return rmse, mae, (model_vals - obs_vals).mean(), int(valid.sum())
 
 
-def results_end_problem(sim_dir: Path, last_time) -> str | None:
+def compute_metrics(model_time, model_temp, obs_time, obs_temp):
+    """RMSE, MAE and bias of the model at the observation times (nearest model time)."""
+    return compute_metrics_n(model_time, model_temp, obs_time, obs_temp)[:3]
+
+
+def results_end_problem(sim_dir: Path, last_time, output_window: tuple[str, str] | None = None) -> str | None:
     """None if the last results.nc record reaches the end of the scored period, else the reason.
 
     The scored period ends at model.time_end of the trial config or at the end of OUTPUT_WINDOW, whichever is earlier. Records are
-    labelled at the end of their step and written every output_res steps, so a complete run ends within one record spacing of it."""
+    labelled at the end of their step and written every output_res steps, so a complete run ends within one record spacing of it.
+    output_window=None uses OUTPUT_WINDOW."""
     cfg = load_config(sim_dir / "config.yaml")
     end = pd.to_datetime(cfg["model"]["time_end"], dayfirst=True)
-    if OUTPUT_WINDOW is not None:
-        end = min(end, pd.to_datetime(OUTPUT_WINDOW[1], dayfirst=True))
+    window = output_window or OUTPUT_WINDOW
+    if window is not None:
+        end = min(end, pd.to_datetime(window[1], dayfirst=True))
     spacing = pd.Timedelta(hours=cfg["model"]["timestep"] * cfg["output"]["output_res"])
     if pd.Timestamp(last_time) < end - spacing:
         return f"results.nc stops at {pd.Timestamp(last_time)}, before the end of the scored period ({end})"
@@ -234,6 +241,82 @@ gc.collect()
 """
 
 
+def score_borehole_2016(sim_dir: Path, sensor_depth_offset: float = SENSOR_DEPTH_OFFSET, make_figure: bool = MAKE_FIGURE,
+                        output_window: tuple[str, str] | None = None) -> tuple[float, pd.DataFrame]:
+    """Score results/results.nc of sim_dir against the borehole record (BI_T-1, 17 depths) and return (objective, per-depth table).
+
+    The objective is the mean RMSE over the depths, times 10 if the surface never gets above 0.01 degC. The table has the columns
+    depth_m (sensor depth), rmse, mae, bias, n. Writes rmse_bias_layers.txt and, with make_figure, temperature_layers.png into sim_dir.
+    A results.nc that stops before the end of the scored period gives (inf, empty table). output_window=None uses OUTPUT_WINDOW."""
+    nc_path = sim_dir / "results" / "results.nc"
+    df_val = pd.read_csv(OBSERVATION_CSV, parse_dates=["date_time"])
+
+    with POSTPROC_LOCK, Dataset(nc_path, "r") as nc:
+        time_units = nc.variables["time"].units
+        time_dt = netCDF4.num2date(nc.variables["time"][:], units=time_units)
+        time_pd = pd.to_datetime(np.array([to_native_datetime(t) for t in time_dt]))
+        ground_temp = nc.variables["ground_temperature_distribution"][:]  # (nt, nx, nz)
+        abs_zgr = nc.variables["abs_zgr"][:][0, 1, :]  # column of grid point 1, as in the published driver
+
+    problem = results_end_problem(sim_dir, time_pd[-1], output_window)
+    if problem:
+        print(f"  => run incomplete, not scored: {problem}")
+        return float("inf"), pd.DataFrame(columns=["depth_m", "rmse", "mae", "bias", "n"])
+
+    depth_model = (abs_zgr - abs_zgr[0]) * -1
+    depths_cm = [d for d in range(0, 426, 25) if d != 75]  # 0, 25, 50, 100, ..., 425 cm (17 depths)
+
+    rmse_list, bias_list, rows, model_temps = [], [], [], {}
+    surface_temp_model = None
+    for d in depths_cm:
+        col = f"dpth{d}cm"
+        idx = np.abs(depth_model - (d / 100 + sensor_depth_offset)).argmin()
+        model_temp = ground_temp[:, 1, idx] - 273.15  # K to degC, middle grid point
+        model_temps[col] = model_temp
+        if col == "dpth0cm":
+            surface_temp_model = model_temp.copy()
+        rmse, mae, bias, n = compute_metrics_n(time_pd, model_temp, df_val["date_time"], df_val[col])
+        rmse_list.append(rmse)
+        bias_list.append(bias)
+        rows.append(dict(depth_m=d / 100, rmse=rmse, mae=mae, bias=bias, n=n))
+
+    rmse_mean = np.mean(rmse_list)
+    rmse_weight = np.average(rmse_list, weights=np.ones(len(rmse_list)))  # all depths equally weighted
+
+    # penalty: a surface that never gets above freezing means the model never thawed
+    if surface_temp_model is not None and np.all(surface_temp_model < 0.01):
+        rmse_weight *= 10.0
+        print("  WARNING: surface temperature (dpth0cm) is never above zero. Applying penalty factor 10x")
+
+    with open(sim_dir / "rmse_bias_layers.txt", "w") as f:
+        f.write(f"Weighted RMSE: {rmse_weight:.4f}\nMean RMSE: {rmse_mean:.4f}\n\n")
+        for d, r, b in zip(depths_cm, rmse_list, bias_list):
+            f.write(f"dpth{d}cm: RMSE={r:.4f}, Bias={b:.4f}\n")
+
+    if make_figure:
+        with POSTPROC_LOCK:
+            selected = [0, 50, 100, 200, 300]
+            fig, axs = plt.subplots(len(selected), 1, figsize=(18, 12), sharex=True)
+            for ax, d, color in zip(axs, selected, ["C0", "C1", "C2", "C3", "C4"]):
+                col = f"dpth{d}cm"
+                rmse, mae, bias = compute_metrics(time_pd, model_temps[col], df_val["date_time"], df_val[col])
+                ax.plot(time_pd, model_temps[col], color, label="Modelled")
+                ax.plot(df_val["date_time"], df_val[col], "k", label="Measured")
+                ax.text(0.95, 0.05, f"{d} cm depth\nRMSE = {rmse:.2f} °C\nMAE = {mae:.2f} °C\nBias = {bias:.2f} °C",
+                        transform=ax.transAxes, fontsize=12, va="bottom", ha="right", bbox=dict(facecolor="white", alpha=0.7, edgecolor="none"))
+                ax.set_xlim((pd.to_datetime("2016-05-15"), pd.to_datetime("2016-09-30")))
+                ax.set_ylim((-10, 5))
+                ax.legend(loc="upper left")
+                ax.set_ylabel("Temperature [C]")
+                ax.grid()
+            axs[-1].set_xlabel("Time")
+            fig.tight_layout()
+            fig.savefig(sim_dir / "temperature_layers.png", dpi=300)
+            plt.close(fig)
+
+    return rmse_weight, pd.DataFrame(rows)
+
+
 def run_simulation(sim_dir: Path) -> float:
     """Run the model of one trial in a child process and return the objective (mean RMSE over the observed depths)."""
     script = sim_dir / "run_simulation_subprocess.py"
@@ -246,70 +329,9 @@ def run_simulation(sim_dir: Path) -> float:
         if result.returncode != 0:  # a killed run can leave a partial results.nc
             print(f"  => run failed (exit code {result.returncode}), not scored: {sim_dir.name}")
             return float("inf")
-        df_val = pd.read_csv(OBSERVATION_CSV, parse_dates=["date_time"])
-
-        with POSTPROC_LOCK, Dataset(nc_path, "r") as nc:
-            time_units = nc.variables["time"].units
-            time_dt = netCDF4.num2date(nc.variables["time"][:], units=time_units)
-            time_pd = pd.to_datetime(np.array([to_native_datetime(t) for t in time_dt]))
-            ground_temp = nc.variables["ground_temperature_distribution"][:]  # (nt, nx, nz)
-            abs_zgr = nc.variables["abs_zgr"][:][0, 1, :]  # column of grid point 1, as in the published driver
-
-        problem = results_end_problem(sim_dir, time_pd[-1])
-        if problem:
-            print(f"  => run incomplete, not scored: {problem}")
-            return float("inf")
-
-        depth_model = (abs_zgr - abs_zgr[0]) * -1
-        depth_map = {f"dpth{d}cm": d / 100 + SENSOR_DEPTH_OFFSET for d in range(0, 426, 25) if d not in (75,)}  # 0, 25, 50, 100, ..., 425 cm (17 depths)
-
-        rmse_list, bias_list, model_temps = [], [], {}
-        surface_temp_model = None
-        for col, depth_val in depth_map.items():
-            idx = np.abs(depth_model - depth_val).argmin()
-            model_temp = ground_temp[:, 1, idx] - 273.15  # K to degC, middle grid point
-            model_temps[col] = model_temp
-            if col == "dpth0cm":
-                surface_temp_model = model_temp.copy()
-            rmse, mae, bias = compute_metrics(time_pd, model_temp, df_val["date_time"], df_val[col])
-            rmse_list.append(rmse)
-            bias_list.append(bias)
-
-        rmse_mean = np.mean(rmse_list)
-        rmse_weight = np.average(rmse_list, weights=np.ones(len(rmse_list)))  # all depths equally weighted
-
-        # penalty: a surface that never gets above freezing means the model never thawed
-        if surface_temp_model is not None and np.all(surface_temp_model < 0.01):
-            rmse_weight *= 10.0
-            print("  WARNING: surface temperature (dpth0cm) is never above zero. Applying penalty factor 10x")
-
-        with open(sim_dir / "rmse_bias_layers.txt", "w") as f:
-            f.write(f"Weighted RMSE: {rmse_weight:.4f}\nMean RMSE: {rmse_mean:.4f}\n\n")
-            for col, r, b in zip(depth_map, rmse_list, bias_list):
-                f.write(f"{col}: RMSE={r:.4f}, Bias={b:.4f}\n")
-
-        if MAKE_FIGURE:
-            with POSTPROC_LOCK:
-                selected = [0, 50, 100, 200, 300]
-                fig, axs = plt.subplots(len(selected), 1, figsize=(18, 12), sharex=True)
-                for ax, d, color in zip(axs, selected, ["C0", "C1", "C2", "C3", "C4"]):
-                    col = f"dpth{d}cm"
-                    rmse, mae, bias = compute_metrics(time_pd, model_temps[col], df_val["date_time"], df_val[col])
-                    ax.plot(time_pd, model_temps[col], color, label="Modelled")
-                    ax.plot(df_val["date_time"], df_val[col], "k", label="Measured")
-                    ax.text(0.95, 0.05, f"{d} cm depth\nRMSE = {rmse:.2f} °C\nMAE = {mae:.2f} °C\nBias = {bias:.2f} °C",
-                            transform=ax.transAxes, fontsize=12, va="bottom", ha="right", bbox=dict(facecolor="white", alpha=0.7, edgecolor="none"))
-                    ax.set_xlim((pd.to_datetime("2016-05-15"), pd.to_datetime("2016-09-30")))
-                    ax.set_ylim((-10, 5))
-                    ax.legend(loc="upper left")
-                    ax.set_ylabel("Temperature [C]")
-                    ax.grid()
-                axs[-1].set_xlabel("Time")
-                fig.tight_layout()
-                fig.savefig(sim_dir / "temperature_layers.png", dpi=300)
-                plt.close(fig)
-
-        del time_pd
+        rmse_weight, _ = score_borehole_2016(sim_dir, SENSOR_DEPTH_OFFSET, MAKE_FIGURE)  # module values read here, not at definition
+        if np.isinf(rmse_weight):  # incomplete results.nc
+            return rmse_weight
         gc.collect()
         print("=> finished this iteration")
 

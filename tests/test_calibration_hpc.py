@@ -51,7 +51,7 @@ def test_thermal_defaults_are_the_desktop_values():
     m = load_driver("run_thermal_calibration")
     assert str(m.RUN_ROOT_DIR) == r"N:\arctic-xbeach-runs\v11_runs\thermal_calibration"
     assert str(m.FORCING_CSV) == r"N:\arctic-xbeach-runs\database\era5.csv"
-    assert (m.N_TRIALS, m.N_PARALLEL, m.THERMAL_DT, m.SENSOR_DEPTH_OFFSET) == (1000, 8, 360, 0.0)
+    assert (m.N_TRIALS, m.N_PARALLEL, m.THERMAL_DT, m.SENSOR_DEPTH_OFFSET) == (1000, 8, 60, 0.0)
     assert (m.STUDY_NAME, m.STORAGE, m.SCRATCH, m.KEEP_XB_FILES, m.CONSTANT_LIAR) == ("calibration_optuna", "sqlite", None, True, False)
 
 
