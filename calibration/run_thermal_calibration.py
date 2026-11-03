@@ -202,8 +202,8 @@ def run_simulation(sim_dir: Path) -> float:
     """Run the model of one trial in a child process and return the objective (mean RMSE over the observed depths)."""
     script = sim_dir / "run_simulation_subprocess.py"
     script.write_text(CHILD_SCRIPT.format(repo=str(REPO_DIR), sim_dir=str(sim_dir)))
-    subprocess.run([sys.executable, str(script)], cwd=str(sim_dir))
-    print(f" => simulation finished: {sim_dir.name}")
+    result = subprocess.run([sys.executable, str(script)], cwd=str(sim_dir))
+    print(f" => simulation finished: {sim_dir.name}, exit code {result.returncode}")  # a native crash leaves only this
 
     nc_path = sim_dir / "results" / "results.nc"
     try:

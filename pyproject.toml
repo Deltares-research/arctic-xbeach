@@ -21,6 +21,7 @@ dependencies = [
     "matplotlib>=3.4",
     "pyyaml>=5.4",
     "shapely>=1.8",
+    "psutil>=5.8",
 ]
 
 [project.urls]

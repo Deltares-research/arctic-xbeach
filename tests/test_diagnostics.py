@@ -12,7 +12,7 @@ import numpy as np
 import pytest
 import xarray as xr
 
-from run_helpers import build_run
+from run_helpers import build_run, reset_logger, run_main
 import arctic_xbeach.diagnostics as dg
 from arctic_xbeach.diagnostics import RunDiagnostics
 from arctic_xbeach.model import Simulation
@@ -197,3 +197,38 @@ def test_main_limits_openblas_threads():
     assert subprocess.run([sys.executable, "-c", code], cwd=REPO_ROOT, env=env, capture_output=True, text=True).stdout.strip() == "1"
     env["OPENBLAS_NUM_THREADS"] = "4"
     assert subprocess.run([sys.executable, "-c", code], cwd=REPO_ROOT, env=env, capture_output=True, text=True).stdout.strip() == "4"
+
+
+def test_memory_status_reports_resources(tmp_path):
+    line = dg.memory_status(tmp_path)
+    assert line.startswith("Resources: ") and "process" in line and "disk free" in line
+
+
+def test_memory_status_survives_a_missing_folder(tmp_path):
+    assert "disk unknown" in dg.memory_status(tmp_path / "does_not_exist")
+
+
+def test_run_log_records_resources_and_the_failure(tmp_path, monkeypatch):
+    """A run writes the resource line with its progress, and an exception ends up in run.log with its traceback."""
+    from main import main
+
+    run_dir = build_run(tmp_path / "run")
+    run_main(run_dir, REPO_ROOT)
+    assert "Resources: process" in (run_dir / "run.log").read_text(encoding="utf-8")
+
+    cwd = os.getcwd()
+    reset_logger()
+    try:
+        sim = Simulation(str(run_dir), proj_dir=str(REPO_ROOT))
+
+        def fail(*args, **kwargs):
+            raise MemoryError("Unable to allocate 16 GiB")
+
+        monkeypatch.setattr(sim, "generate_initial_grid", fail)
+        with pytest.raises(MemoryError):
+            main(sim, print_to_screen=False)
+    finally:
+        reset_logger()
+        os.chdir(cwd)
+    log = (run_dir / "run.log").read_text(encoding="utf-8")
+    assert "Simulation failed. Resources:" in log and "MemoryError: Unable to allocate 16 GiB" in log and "Traceback" in log

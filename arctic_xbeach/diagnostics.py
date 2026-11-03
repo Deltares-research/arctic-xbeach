@@ -33,11 +33,17 @@ Conventions of the heat budget
 """
 
 import csv
+import shutil
 import time
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
+
+try:
+    import psutil
+except ImportError:
+    psutil = None
 
 CALL_COLUMNS = [
     "call_id", "timestep_id", "time", "year", "reason", "xbeach_times_value", "hotstart", "sim_hours",
@@ -61,6 +67,28 @@ CONSERVATION_COLUMNS = [
 # =============================================================================
 # Pure helpers (also used by the tests)
 # =============================================================================
+def memory_status(path) -> str:
+    """One line on process memory, system memory and free disk at path, for run.log. Must never fail a run."""
+    parts = []
+    if psutil is not None:
+        try:
+            mem = psutil.Process().memory_info()
+            # On Windows, private bytes count against the commit limit and RSS does not
+            private = getattr(mem, "private", mem.rss) / 1e6
+            peak = getattr(mem, "peak_pagefile", 0) / 1e6
+            parts.append(f"process {private:.0f} MB" + (f" (peak {peak:.0f} MB)" if peak else "") + f", RSS {mem.rss / 1e6:.0f} MB")
+            swap = psutil.swap_memory()
+            parts.append(f"system RAM available {psutil.virtual_memory().available / 1e9:.1f} GB, "
+                         f"page file {swap.used / 1e9:.1f} of {swap.total / 1e9:.1f} GB")
+        except Exception as e:
+            parts.append(f"memory unknown ({e})")
+    try:
+        parts.append(f"disk free {shutil.disk_usage(path).free / 1e9:.1f} GB")
+    except Exception as e:
+        parts.append(f"disk unknown ({e})")
+    return "Resources: " + ", ".join(parts)
+
+
 def arc_length_weights(x: np.ndarray, z: np.ndarray) -> np.ndarray:
     """Surface arc length [m] owned by each node of the profile (trapezoid weights along the profile)."""
     seg = np.hypot(np.diff(x), np.diff(z))

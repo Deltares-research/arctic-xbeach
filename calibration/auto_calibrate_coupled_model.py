@@ -181,7 +181,8 @@ def launch(sim_dir: Path):
     """Run main.py on sim_dir in a child process of the current interpreter."""
     script = sim_dir / "run_simulation_subprocess.py"
     script.write_text(CHILD_SCRIPT.format(repo=str(REPO_DIR), sim_dir=str(sim_dir)))
-    subprocess.run([sys.executable, str(script)], cwd=str(sim_dir))
+    result = subprocess.run([sys.executable, str(script)], cwd=str(sim_dir))
+    print(f" => child process exit code {result.returncode}: {sim_dir.name}")  # a native crash leaves only this
 
 
 def ensure_spinup_state(template: Path) -> Path:

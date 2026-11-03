@@ -50,7 +50,7 @@ import gc
 from arctic_xbeach.model import Simulation
 from arctic_xbeach.bathymetry import generate_schematized_bathymetry
 from arctic_xbeach.miscellaneous import textbox, datetime_from_timestamp
-from arctic_xbeach.diagnostics import RunDiagnostics
+from arctic_xbeach.diagnostics import RunDiagnostics, memory_status
 from arctic_xbeach.run_lock import acquire_run_lock, release_run_lock
 from arctic_xbeach.version import run_header
 
@@ -294,8 +294,9 @@ def _main(sim, print_to_screen=True):
                 else:
                     logger.info(f"Progress {progress_pct}% | avg_step={avg_step_time:.1f}s | "
                               f"{sim.timestamps[timestep_id]} | ETA ~ {eta_hours:.2f}h")
+                logger.info(memory_status(sim.result_dir))
                 last_progress_info = progress_pct
-            
+
         # ---------------------------------------------------------------------
         # XBeach Decision and Execution
         # ---------------------------------------------------------------------
@@ -447,6 +448,9 @@ def main(sim, print_to_screen=True):
     lock = acquire_run_lock(sim.cwd)    # raises before anything in the folder is touched
     try:
         return _main(sim, print_to_screen)
+    except Exception:  # the calibration child scripts have no handler of their own, so run.log is the only record
+        logger.exception(f"Simulation failed. {memory_status(sim.result_dir)}")
+        raise
     finally:
         release_run_lock(lock)
 
