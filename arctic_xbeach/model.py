@@ -468,7 +468,7 @@ class Simulation():
                             }
                 
             else:
-                conds = self.zero_conditions
+                conds = dict(self.zero_conditions)  # own copy, each hour keeps its own water level
                 conds['WL(m)'] = row['WL(m)']
                 
                 self.conditions[index] = conds
