@@ -69,7 +69,7 @@ desktop nothing needs to be set. `hpc/h7/*.sbatch` sets them for the Deltares H7
 | `AXB_MAX_FAILED_XBEACH_CALLS` | coupled | a trial with more failed XBeach calls (rows with `success` 0 in `results/xbeach_calls.csv`) than this gets `inf` (0); the count is the trial attribute `n_failed_xbeach_calls` |
 | `AXB_TIME_END` | coupled | `DD-MM-YYYY`, replaces `model.time_end` of the template (short smoke test; unset = keep it) |
 | `AXB_STUDY_NAME` | both | Optuna study name (`calibration_optuna`) |
-| `AXB_THERMAL_DT` | both | thermal time step [s] (thermal 360, coupled 90) |
+| `AXB_THERMAL_DT` | both | thermal time step [s] (thermal 60, coupled 90) |
 | `AXB_SENSOR_DEPTH_OFFSET` | thermal | [m] added to the sensor depths (0.0) |
 | `AXB_STORAGE` | both, `export_history.py` | `sqlite` (default, `optuna_study.db`) or `journal` (`optuna_journal.log`) |
 | `AXB_SCRATCH` | both | empty = trials run in `AXB_RUN_ROOT`. A folder = each trial runs in `<scratch>/optuna_trial_NNNNNN` and is copied back |

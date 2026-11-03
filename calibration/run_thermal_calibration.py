@@ -44,8 +44,8 @@ START_PARAMS = dict(nb_min=0.46951231603096133, nb_increase=0.24059594350455396,
 # v1.1 solver options written into every trial config (thermal.* and data.*). Use the legacy values (nodal, per_mass, 0) for the v1.0 solver.
 SOLVER_OPTIONS = dict(conduction_form="flux", latent_heat_form="volumetric")
 ERA5_FLUX_SHIFT_HOURS = 1
-THERMAL_DT = int(os.environ.get("AXB_THERMAL_DT", 360))       # thermal substep [s]. 360 s keeps Fo <= 0.38 over the whole search range (k up to 4.0, C down to 1.5e6) and
-                       # changes the objective of the published best by 0.0001 K against 120 s (v11_runs/thermal_speed_tests); None = base config
+THERMAL_DT = int(os.environ.get("AXB_THERMAL_DT", 60))       # thermal substep [s]. 60 s: largest divisor of 3600 below 75 s, the limit dt <= (1 - 2Fo) C_frozen dz / (2 hc) of the wet surface node (Barter, 3 Nov)
+                       # thaw depth does not depend on dt (column test); 360 s changed the objective by 0.0001 K. None = base config
 OUTPUT_WINDOW = ("31-05-2016", "15-09-2016")  # netCDF output only over the borehole record (BI_T-1); None = whole run
 SENSOR_DEPTH_OFFSET = float(os.environ.get("AXB_SENSOR_DEPTH_OFFSET", 0.0))  # [m] added to each sensor depth before the nearest-node lookup. Nodes are cell centres, so 0 is the true depth.
                           # 0.1 repeats the published objective and thermal trial 490 (0.82 K at dt 90 s); it is 2 cells of the 0.05 m grid
