@@ -344,6 +344,7 @@ def _main(sim, print_to_screen=True):
                 if not os.path.exists(xb_output_path):
                     logger.error(f"XBeach completed but output file not found: {xb_output_path}")
                     run_successful = False
+            sim.xbeach_success[timestep_id] = bool(run_successful)  # write_output records only successful calls
             
             try:
                 if run_successful:

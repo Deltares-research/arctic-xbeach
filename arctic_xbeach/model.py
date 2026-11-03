@@ -505,6 +505,9 @@ class Simulation():
         # initialize xbeach_times array
         self.xbeach_times = np.zeros(self.xbeach_inter.shape)
 
+        # calls that ran and produced output (set by the main loop); these are the calls write_output records
+        self.xbeach_success = np.zeros(self.xbeach_inter.shape, dtype=bool)
+
         return self.xbeach_times
     
     
@@ -2371,10 +2374,9 @@ class Simulation():
             i = len(self.nc_writer.v["time"])  # next index
         else:
             i = 0
-        # Count how many XBeach timesteps have been written so far
-        # For output: count previous XBeach runs (excluding current) to get correct index
+        # next XBeach record: count the records written, not the calls made (calls between output steps are never written)
         if "time_xbeach" in self.nc_writer.v:
-            i_xb = sum(self.xbeach_times[:timestep_id] == 1.0)
+            i_xb = len(self.nc_writer.v["time_xbeach"])
         else:
             i_xb = 0
 
@@ -2469,8 +2471,8 @@ class Simulation():
         }, time_dim="time")
         
         # append XBeach parameters (use "time_xbeach" dimension)
-        # Only write XBeach data if XBeach was run for this timestep
-        if (self.xbeach_times[timestep_id] == 1.0):
+        # Only write XBeach data if XBeach ran successfully at this timestep (xbeach_times is 2.0 for a storm on an inter-storm call)
+        if self.xbeach_success[timestep_id]:
             # Use a separate index for XBeach time (could be fewer timesteps)
             self.nc_writer.append(i_xb, {
                 "time_xbeach": t_rel,
