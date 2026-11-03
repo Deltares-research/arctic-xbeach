@@ -133,6 +133,12 @@ python main.py examples/case_studies/barter_island
 
 ---
 
+## Linux / HPC
+
+The model and the Optuna calibration drivers run on Linux. Job scripts, environment setup and a step-by-step guide for the Deltares H7 cluster (SLURM) are in [`hpc/h7/README_H7.md`](hpc/h7/README_H7.md); the `AXB_*` environment variables that configure the drivers are listed in [`calibration/README.md`](calibration/README.md).
+
+---
+
 ## Options added in v1.1 (defaults are the legacy values)
 
 | Option | Values | Effect |
