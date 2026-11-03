@@ -13,20 +13,27 @@ False in the base config), compare the modelled ground temperature in the column
 nonzero exit code, or a results.nc that stops before the end of the scored period, is not scored.
 
 Run:  python calibration/run_thermal_calibration.py        (see calibration/README.md)
+
+On a Linux cluster the same script is configured through AXB_* environment variables (hpc/h7/thermal_calibration.sbatch). With
+STORAGE = "journal" the study is an append-only file that is safe on NFS; with SCRATCH set each trial runs on that (local) disk and
+is copied back to RUN_ROOT_DIR. Only ONE driver process per study is supported: at start, trials still RUNNING in the study are taken
+to be left by a killed earlier job and are marked FAIL.
 """
 # === CONFIGURATION ===
+# The AXB_* environment variables override the defaults below (used by hpc/h7/*.sbatch); without them nothing changes.
+import os
 from pathlib import Path
 
 REPO_DIR = Path(__file__).resolve().parents[1]  # arctic-xbeach checkout that is imported by the trials
-BASE_SIM_DIR = Path(r"N:\arctic-xbeach-runs\thermal_calibration_runs\20260201_calibration_runs\base")  # template run folder (config.yaml, x.grd, bed.dep, ne_layer.txt)
-RUN_ROOT_DIR = Path(r"N:\arctic-xbeach-runs\v11_runs\thermal_calibration")  # trial folders, optuna_study.db, logs are written here
-OBSERVATION_CSV = Path(r"D:\Git\thermo-morphological-model\database\raw_datasets\erikson2\Temp_arrays USGS-UCSC_Oberle\BI_T-1_processed.csv")
-FORCING_CSV = Path(r"N:\arctic-xbeach-runs\database\era5.csv")   # written into every trial config (None = keep the path of the base config)
-STORM_CSV = Path(r"N:\arctic-xbeach-runs\database\storms.csv")   # idem
+BASE_SIM_DIR = Path(os.environ.get("AXB_BASE_SIM_DIR", r"N:\arctic-xbeach-runs\thermal_calibration_runs\20260201_calibration_runs\base"))  # template run folder (config.yaml, x.grd, bed.dep, ne_layer.txt)
+RUN_ROOT_DIR = Path(os.environ.get("AXB_RUN_ROOT", r"N:\arctic-xbeach-runs\v11_runs\thermal_calibration"))  # trial folders, optuna_study.db (or optuna_journal.log), logs are written here
+OBSERVATION_CSV = Path(os.environ.get("AXB_OBS_CSV", r"D:\Git\thermo-morphological-model\database\raw_datasets\erikson2\Temp_arrays USGS-UCSC_Oberle\BI_T-1_processed.csv"))
+FORCING_CSV = Path(os.environ.get("AXB_FORCING_CSV", r"N:\arctic-xbeach-runs\database\era5.csv"))   # written into every trial config (None = keep the path of the base config)
+STORM_CSV = Path(os.environ.get("AXB_STORM_CSV", r"N:\arctic-xbeach-runs\database\storms.csv"))   # idem
 
-N_TRIALS = 1000        # completed trials the study should reach; a rerun on an existing study runs only the rest
+N_TRIALS = int(os.environ.get("AXB_N_TRIALS", 1000))        # completed trials the study should reach; a rerun on an existing study runs only the rest
                        # (published study: 125 epochs x 8 workers = 1000)
-N_PARALLEL = 8         # trials running at the same time (one child process each)
+N_PARALLEL = int(os.environ.get("AXB_N_PARALLEL", 8))         # trials running at the same time (one child process each)
 SEED = 1               # seed of the TPE sampler. With N_PARALLEL > 1 the order in which trials finish still varies, so runs are not bit-reproducible
 # enqueue this parameter set as the first trial of a new study (names of the suggest_* calls below); None = no start set
 START_PARAMS = dict(nb_min=0.46951231603096133, nb_increase=0.24059594350455396, transition_top=0.41887032171820293,
@@ -37,16 +44,25 @@ START_PARAMS = dict(nb_min=0.46951231603096133, nb_increase=0.24059594350455396,
 # v1.1 solver options written into every trial config (thermal.* and data.*). Use the legacy values (nodal, per_mass, 0) for the v1.0 solver.
 SOLVER_OPTIONS = dict(conduction_form="flux", latent_heat_form="volumetric")
 ERA5_FLUX_SHIFT_HOURS = 1
-THERMAL_DT = 360       # thermal substep [s]. 360 s keeps Fo <= 0.38 over the whole search range (k up to 4.0, C down to 1.5e6) and
+THERMAL_DT = int(os.environ.get("AXB_THERMAL_DT", 360))       # thermal substep [s]. 360 s keeps Fo <= 0.38 over the whole search range (k up to 4.0, C down to 1.5e6) and
                        # changes the objective of the published best by 0.0001 K against 120 s (v11_runs/thermal_speed_tests); None = base config
 OUTPUT_WINDOW = ("31-05-2016", "15-09-2016")  # netCDF output only over the borehole record (BI_T-1); None = whole run
-SENSOR_DEPTH_OFFSET = 0.0  # [m] added to each sensor depth before the nearest-node lookup. Nodes are cell centres, so 0 is the true depth.
+SENSOR_DEPTH_OFFSET = float(os.environ.get("AXB_SENSOR_DEPTH_OFFSET", 0.0))  # [m] added to each sensor depth before the nearest-node lookup. Nodes are cell centres, so 0 is the true depth.
                           # 0.1 repeats the published objective and thermal trial 490 (0.82 K at dt 90 s); it is 2 cells of the 0.05 m grid
 
-STUDY_NAME = "calibration_optuna"
+STUDY_NAME = os.environ.get("AXB_STUDY_NAME", "calibration_optuna")
+STORAGE = os.environ.get("AXB_STORAGE", "sqlite")  # "sqlite" (RUN_ROOT_DIR/optuna_study.db) or "journal" (RUN_ROOT_DIR/optuna_journal.log, for NFS)
+SCRATCH = Path(os.environ["AXB_SCRATCH"]) if os.environ.get("AXB_SCRATCH") else None  # trials run here and are copied back to RUN_ROOT_DIR; None = run in RUN_ROOT_DIR
+KEEP_XB_FILES = os.environ.get("AXB_KEEP_XB_FILES", "1").lower() not in ("0", "false", "no")  # False = delete results/xb_files of a trial after scoring (no effect with SCRATCH: never copied back)
+CONSTANT_LIAR = os.environ.get("AXB_CONSTANT_LIAR", "0").lower() in ("1", "true", "yes")  # with ~40 parallel trials this keeps TPE from proposing near-duplicates of the trials still running
 MAKE_FIGURE = True     # temperature_layers.png in every trial folder
 KEEP_RESULTS_NC = False  # the results.nc of a trial is deleted after the skill has been computed
 # === END CONFIGURATION ===
+
+# One BLAS / OpenMP thread per process: 40 trials would otherwise each try to use all cores. Set before numpy is imported;
+# the child processes inherit them (main.py sets the same OpenBLAS default for its own runs).
+for _var in ("OPENBLAS_NUM_THREADS", "OMP_NUM_THREADS", "MKL_NUM_THREADS"):
+    os.environ.setdefault(_var, "1")
 
 import datetime
 import gc
@@ -56,6 +72,7 @@ import sys
 import threading
 import warnings
 
+import optuna_hpc as hpc  # calibration/optuna_hpc.py, next to this script
 import matplotlib
 matplotlib.use("Agg")  # non-interactive backend
 import matplotlib.pyplot as plt
@@ -316,32 +333,29 @@ def objective(trial: optuna.Trial) -> float:
         else:
             params[k] = trial.suggest_float(k, float(v[0]), float(v[1]))
 
-    sim_dir = RUN_ROOT_DIR / f"optuna_trial_{trial.number:06d}"
-    if sim_dir.exists():
-        shutil.rmtree(sim_dir)
-    shutil.copytree(BASE_SIM_DIR, sim_dir)
-    update_config_yaml(sim_dir, params)
-
-    rmse = run_simulation(sim_dir)
+    work_dir, sim_dir = hpc.trial_dirs(RUN_ROOT_DIR, SCRATCH, trial.number)  # the same folder unless SCRATCH is set
+    try:
+        if work_dir.exists():
+            shutil.rmtree(work_dir)
+        shutil.copytree(BASE_SIM_DIR, work_dir)
+        update_config_yaml(work_dir, params)
+        rmse = run_simulation(work_dir)
+    finally:  # also after a failed run: run.log is needed
+        hpc.finish_trial_dir(work_dir, sim_dir, KEEP_RESULTS_NC, KEEP_XB_FILES)
     trial.set_user_attr("sim_dir", str(sim_dir))
     trial.set_user_attr("rmse", float(rmse))
 
-    with open(RUN_ROOT_DIR / "calibration_prints.txt", "a", encoding="utf-8") as f:
-        f.write(f"Trial {trial.number} completed.\n  Parameters: {params}\n  RMSE: {rmse}\n  Simulation directory: {sim_dir}\n")
+    hpc.append_log(RUN_ROOT_DIR / "calibration_prints.txt",
+                   f"Trial {trial.number} completed.\n  Parameters: {params}\n  RMSE: {rmse}\n  Simulation directory: {sim_dir}\n")
     return float(rmse)
 
 
 def main():
     RUN_ROOT_DIR.mkdir(parents=True, exist_ok=True)
     print_log = RUN_ROOT_DIR / "calibration_prints.txt"
-    with open(print_log, "a", encoding="utf-8") as f:
-        f.write(f"Calibration run started: {datetime.datetime.now()}\n")
+    hpc.append_log(print_log, f"Calibration run started: {datetime.datetime.now()}\n")
 
-    study = optuna.create_study(
-        study_name=STUDY_NAME, direction="minimize", load_if_exists=True,
-        storage=f"sqlite:///{(RUN_ROOT_DIR / 'optuna_study.db').as_posix()}",
-        sampler=optuna.samplers.TPESampler(seed=SEED),
-    )
+    study = hpc.open_study(STUDY_NAME, RUN_ROOT_DIR, STORAGE, optuna.samplers.TPESampler(seed=SEED, constant_liar=CONSTANT_LIAR))
     if START_PARAMS is not None and len(study.trials) == 0:
         study.enqueue_trial(START_PARAMS)  # first trial of a new study
 
@@ -352,14 +366,12 @@ def main():
         study.optimize(objective, n_trials=n_todo, n_jobs=N_PARALLEL, callbacks=[lambda study, trial: gc.collect()])
     except KeyboardInterrupt:
         print("Optimization interrupted by user.")
-        with open(print_log, "a", encoding="utf-8") as f:
-            f.write("Optimization interrupted by user.\n")
+        hpc.append_log(print_log, "Optimization interrupted by user.\n")
 
     study.trials_dataframe().to_csv(RUN_ROOT_DIR / "calibration_results.csv", index=False)
     best = study.best_trial
-    with open(print_log, "a", encoding="utf-8") as f:
-        f.write(f"\nCalibration finished: {datetime.datetime.now()}\nBest parameters found: {best.params}\n"
-                f"Best trial number: {best.number}\nBest RMSE: {best.value}\n")
+    hpc.append_log(print_log, f"\nCalibration finished: {datetime.datetime.now()}\nBest parameters found: {best.params}\n"
+                              f"Best trial number: {best.number}\nBest RMSE: {best.value}\n")
     print("Best parameters found:", best.params)
     print("Best trial number:", best.number)
     print("Best RMSE:", best.value)

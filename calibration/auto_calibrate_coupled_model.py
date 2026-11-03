@@ -16,24 +16,32 @@ Workflow
   3. trials: copy of the template + sampled parameters + spinup_state_in, run, score, delete results.nc.
 
 Run:  python calibration/auto_calibrate_coupled_model.py        (see calibration/README.md)
+
+On a Linux cluster the same script is configured through AXB_* environment variables (hpc/h7/coupled_calibration.sbatch). With
+STORAGE = "journal" the study is an append-only file that is safe on NFS; with SCRATCH set each trial runs on that (local) disk and
+is copied back to RUN_ROOT_DIR without its results/xb_files. The template and the spin-up state stay in RUN_ROOT_DIR. Only ONE driver
+process per study is supported: at start, trials still RUNNING in the study are taken to be left by a killed earlier job and are
+marked FAIL.
 """
 # === CONFIGURATION ===
+# The AXB_* environment variables override the defaults below (used by hpc/h7/*.sbatch); without them nothing changes.
+import os
 from pathlib import Path
 
 REPO_DIR = Path(__file__).resolve().parents[1]  # arctic-xbeach checkout that is imported by the trials
-BASE_SIM_DIR = Path(r"N:\arctic-xbeach-runs\coupled_calibration_runs\20260214_calibration_runs\base")  # template run folder (config.yaml, x.grd, bed.dep, ne_layer.txt)
-RUN_ROOT_DIR = Path(r"N:\arctic-xbeach-runs\v11_runs\coupled_calibration")  # template, spin-up state, trial folders, optuna_study.db, logs
-THERMAL_CONFIG_YAML = Path(r"N:\arctic-xbeach-runs\v11_runs\thermal_calibration\optuna_trial_000490\config.yaml")  # best thermal trial of step 1 (RMSE 0.8203 K); its thermal section replaces the template's. None = keep the template's thermal section
-THERMAL_DT = 90        # [s] thermal timestep of the coupled runs, replaces thermal.dt of the config above (trial 490 was calibrated at 360 s, too large for a wet surface node). None = keep it
-BLUFF_EDGES_CSV = Path(r"D:\Git\thermo-morphological-model\database\ts_datasets\bluff_edges_without_geometry.csv")  # columns time, distance_from_ref
-SHORELINES_CSV = Path(r"D:\Git\thermo-morphological-model\database\ts_datasets\shore_lines_without_geometry.csv")
-FORCING_CSV = Path(r"N:\arctic-xbeach-runs\database\era5.csv")   # written into every config (None = keep the path of the base config)
-STORM_CSV = Path(r"N:\arctic-xbeach-runs\database\storms.csv")   # idem
-XBEACH_EXE = None   # path of xbeach.exe written into every config (None = keep the base config's)
+BASE_SIM_DIR = Path(os.environ.get("AXB_BASE_SIM_DIR", r"N:\arctic-xbeach-runs\coupled_calibration_runs\20260214_calibration_runs\base"))  # template run folder (config.yaml, x.grd, bed.dep, ne_layer.txt)
+RUN_ROOT_DIR = Path(os.environ.get("AXB_RUN_ROOT", r"N:\arctic-xbeach-runs\v11_runs\coupled_calibration"))  # template, spin-up state, trial folders, optuna_study.db (or optuna_journal.log), logs
+THERMAL_CONFIG_YAML = Path(os.environ.get("AXB_THERMAL_CONFIG_YAML", r"N:\arctic-xbeach-runs\v11_runs\thermal_calibration\optuna_trial_000490\config.yaml"))  # best thermal trial of step 1 (RMSE 0.8203 K); its thermal section replaces the template's. None = keep the template's thermal section
+THERMAL_DT = int(os.environ.get("AXB_THERMAL_DT", 90))        # [s] thermal timestep of the coupled runs, replaces thermal.dt of the config above (trial 490 was calibrated at 360 s, too large for a wet surface node). None = keep it
+BLUFF_EDGES_CSV = Path(os.environ.get("AXB_BLUFF_EDGES_CSV", r"D:\Git\thermo-morphological-model\database\ts_datasets\bluff_edges_without_geometry.csv"))  # columns time, distance_from_ref
+SHORELINES_CSV = Path(os.environ.get("AXB_SHORELINES_CSV", r"D:\Git\thermo-morphological-model\database\ts_datasets\shore_lines_without_geometry.csv"))
+FORCING_CSV = Path(os.environ.get("AXB_FORCING_CSV", r"N:\arctic-xbeach-runs\database\era5.csv"))   # written into every config (None = keep the path of the base config)
+STORM_CSV = Path(os.environ.get("AXB_STORM_CSV", r"N:\arctic-xbeach-runs\database\storms.csv"))   # idem
+XBEACH_EXE = os.environ.get("AXB_XBEACH_EXE") or None   # path of xbeach.exe written into every config (None = keep the base config's)
 
-N_TRIALS = 10          # completed trials the study should reach; a rerun on an existing study runs only the rest
+N_TRIALS = int(os.environ.get("AXB_N_TRIALS", 10))          # completed trials the study should reach; a rerun on an existing study runs only the rest
                        # (published study: 25 epochs x 8 workers = 200)
-N_PARALLEL = 8         # trials running at the same time (one child process each)
+N_PARALLEL = int(os.environ.get("AXB_N_PARALLEL", 8))         # trials running at the same time (one child process each)
 SEED = 1               # seed of the TPE sampler (with N_PARALLEL > 1 the order in which trials finish still varies)
 START_PARAMS = None    # enqueue this parameter set as the first trial of a new study. Example: the published best (trial 88, value 4.1222)
 # START_PARAMS = dict(facua=0.018829910025755153, bedfriccoef=0.033501187112818874, wetslp=0.15233427680340267,
@@ -51,15 +59,23 @@ BLUFF_ELEVATION = 13.2       # [m]
 CALIB_START, CALIB_END = "2012-01-01", "2016-01-01"   # observations in this period enter the RMSE
 NORMALIZATION_DATE = "2012-07-11"                      # model and observations are matched at this date (offset removed)
 
-STUDY_NAME = "calibration_optuna"
+STUDY_NAME = os.environ.get("AXB_STUDY_NAME", "calibration_optuna")
+STORAGE = os.environ.get("AXB_STORAGE", "sqlite")  # "sqlite" (RUN_ROOT_DIR/optuna_study.db) or "journal" (RUN_ROOT_DIR/optuna_journal.log, for NFS)
+SCRATCH = Path(os.environ["AXB_SCRATCH"]) if os.environ.get("AXB_SCRATCH") else None  # trials run here and are copied back to RUN_ROOT_DIR; None = run in RUN_ROOT_DIR
+KEEP_XB_FILES = os.environ.get("AXB_KEEP_XB_FILES", "1").lower() not in ("0", "false", "no")  # False = delete results/xb_files of a trial after scoring (about 26,000 files per trial; no effect with SCRATCH: never copied back)
+CONSTANT_LIAR = os.environ.get("AXB_CONSTANT_LIAR", "0").lower() in ("1", "true", "yes")  # with ~40 parallel trials this keeps TPE from proposing near-duplicates of the trials still running
 MAKE_FIGURE = True
 REMOVE_RESULTS_NC = True
 # === END CONFIGURATION ===
 
+# One BLAS / OpenMP thread per process: 40 trials would otherwise each try to use all cores. Set before numpy is imported;
+# the child processes (and XBeach) inherit them (main.py sets the same OpenBLAS default for its own runs).
+for _var in ("OPENBLAS_NUM_THREADS", "OMP_NUM_THREADS", "MKL_NUM_THREADS"):
+    os.environ.setdefault(_var, "1")
+
 import datetime
 import gc
 import json
-import os
 import shutil
 import subprocess
 import sys
@@ -67,6 +83,7 @@ import threading
 import time
 import warnings
 
+import optuna_hpc as hpc  # calibration/optuna_hpc.py, next to this script
 import matplotlib
 matplotlib.use("Agg")  # non-interactive backend
 import matplotlib.pyplot as plt
@@ -376,19 +393,21 @@ def objective(trial: optuna.Trial) -> float:
         else:
             params[k] = trial.suggest_float(k, float(v[0]), float(v[1]))
 
-    sim_dir = RUN_ROOT_DIR / f"optuna_trial_{trial.number:06d}"
-    if sim_dir.exists():
-        shutil.rmtree(sim_dir)
-    shutil.copytree(TEMPLATE, sim_dir)
-    update_config_yaml(sim_dir, params, extra_model={"spinup_state_in": str(SPINUP_STATE)} if SPINUP_STATE else None)
-
-    rmse = run_simulation(sim_dir)
+    work_dir, sim_dir = hpc.trial_dirs(RUN_ROOT_DIR, SCRATCH, trial.number)  # the same folder unless SCRATCH is set
+    try:
+        if work_dir.exists():
+            shutil.rmtree(work_dir)
+        shutil.copytree(TEMPLATE, work_dir)
+        update_config_yaml(work_dir, params, extra_model={"spinup_state_in": str(SPINUP_STATE)} if SPINUP_STATE else None)
+        rmse = run_simulation(work_dir)
+    finally:  # also after a failed run: run.log is needed
+        hpc.finish_trial_dir(work_dir, sim_dir, not REMOVE_RESULTS_NC, KEEP_XB_FILES)
     trial.set_user_attr("sim_dir", str(sim_dir))
     trial.set_user_attr("rmse", float(rmse))
 
     try:
-        with open(RUN_ROOT_DIR / "calibration_prints.txt", "a", encoding="utf-8") as f:
-            f.write(f"Trial {trial.number} completed.\n  Parameters: {params}\n  RMSE: {rmse}\n  Simulation directory: {sim_dir}\n")
+        hpc.append_log(RUN_ROOT_DIR / "calibration_prints.txt",
+                       f"Trial {trial.number} completed.\n  Parameters: {params}\n  RMSE: {rmse}\n  Simulation directory: {sim_dir}\n")
     except Exception:
         pass
     return float(rmse)
@@ -398,18 +417,13 @@ def main():
     global SPINUP_STATE, TEMPLATE
     RUN_ROOT_DIR.mkdir(parents=True, exist_ok=True)
     print_log = RUN_ROOT_DIR / "calibration_prints.txt"
-    with open(print_log, "a", encoding="utf-8") as f:
-        f.write(f"Calibration run started: {datetime.datetime.now()}\n")
+    hpc.append_log(print_log, f"Calibration run started: {datetime.datetime.now()}\n")
 
     TEMPLATE = prepare_template()
     if USE_SPINUP_STATE:
         SPINUP_STATE = ensure_spinup_state(TEMPLATE)
 
-    study = optuna.create_study(  # load_if_exists: a rerun continues the study
-        study_name=STUDY_NAME, direction="minimize", load_if_exists=True,
-        storage=f"sqlite:///{(RUN_ROOT_DIR / 'optuna_study.db').as_posix()}",
-        sampler=optuna.samplers.TPESampler(seed=SEED),
-    )
+    study = hpc.open_study(STUDY_NAME, RUN_ROOT_DIR, STORAGE, optuna.samplers.TPESampler(seed=SEED, constant_liar=CONSTANT_LIAR))  # a rerun continues the study
     if START_PARAMS is not None and len(study.trials) == 0:
         study.enqueue_trial(START_PARAMS)  # first trial of a new study
 
@@ -420,15 +434,13 @@ def main():
         study.optimize(objective, n_trials=n_todo, n_jobs=N_PARALLEL, callbacks=[lambda study, trial: gc.collect()])
     except KeyboardInterrupt:
         print("Optimization interrupted by user.")
-        with open(print_log, "a", encoding="utf-8") as f:
-            f.write("Optimization interrupted by user.\n")
+        hpc.append_log(print_log, "Optimization interrupted by user.\n")
 
     try:
         study.trials_dataframe().to_csv(RUN_ROOT_DIR / "calibration_results.csv", index=False)
         best = study.best_trial
-        with open(print_log, "a", encoding="utf-8") as f:
-            f.write(f"\nCalibration finished: {datetime.datetime.now()}\nBest parameters found: {best.params}\n"
-                    f"Best trial number: {best.number}\nBest RMSE: {best.value}\n")
+        hpc.append_log(print_log, f"\nCalibration finished: {datetime.datetime.now()}\nBest parameters found: {best.params}\n"
+                                  f"Best trial number: {best.number}\nBest RMSE: {best.value}\n")
         print("Best parameters found:", best.params)
         print("Best trial number:", best.number)
         print("Best RMSE:", best.value)
