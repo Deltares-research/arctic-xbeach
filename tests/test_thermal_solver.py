@@ -165,13 +165,14 @@ def test_era5_flux_shift(tmp_path):
     f = tmp_path / "era5.csv"
     df.to_csv(f, index=False)
     sim = Simulation.__new__(Simulation)
-    t0, t1 = pd.Timestamp("2016-01-01 01:00"), pd.Timestamp("2016-01-01 04:00")
-    legacy = sim._get_timeseries(t0, t1, f)
-    shifted = sim._get_timeseries(t0, t1, f, flux_shift_hours=1)
+    sim.timestamps = pd.date_range("2016-01-01 01:00", "2016-01-01 04:00", freq="h", inclusive="left")
+    legacy = sim._get_timeseries(f)
+    shifted = sim._get_timeseries(f, flux_shift_hours=1)
     np.testing.assert_array_equal(legacy["mean_surface_latent_heat_flux"], [10, 20, 30])  # no shift: label t -> row t
     np.testing.assert_array_equal(shifted["mean_surface_latent_heat_flux"], [20, 30, 40])  # row t gets record labelled t+1h
     np.testing.assert_array_equal(shifted["2m_temperature"], legacy["2m_temperature"])  # instantaneous fields untouched
-    last = sim._get_timeseries(pd.Timestamp("2016-01-01 04:00"), pd.Timestamp("2016-01-01 06:00"), f, flux_shift_hours=1)
+    sim.timestamps = pd.date_range("2016-01-01 04:00", "2016-01-01 06:00", freq="h", inclusive="left")
+    last = sim._get_timeseries(f, flux_shift_hours=1)
     np.testing.assert_array_equal(last["mean_surface_latent_heat_flux"], [50, 50])  # last record held, not NaN
 
 

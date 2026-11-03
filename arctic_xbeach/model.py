@@ -318,7 +318,7 @@ class Simulation():
         # Read in forcing conditions
         # data.era5_flux_shift_hours: 0 = no shift (flux label applied as given), 1 = shift to the start of the ERA5 averaging hour
         self.forcing_data = self._get_timeseries(
-            self.t_start, self.t_end, fpath,
+            fpath,
             flux_shift_hours=self.config.data.get('era5_flux_shift_hours', 0)
             )
         
@@ -441,12 +441,11 @@ class Simulation():
                         "Hindcast_or_projection": 0,
                         }
         
-        # read file and mask out correct timespan
+        # read file and select the rows at the model timestamps (row k = timestep k; a missing timestamp is an error)
         with open(fp_storm) as f:
             df = pd.read_csv(f, parse_dates=['time'])
-            mask = (df['time'] >= self.t_start) * (df['time'] <= self.t_end)
-            df = df[mask]
-        
+        df = self._at_model_timestamps(df, fp_storm)
+
         # In conceptual mode, override all wave conditions with minimal values
         if use_conceptual:
             logger.info("Conceptual mode enabled: setting minimal wave heights to prevent XBeach activation")
@@ -482,7 +481,7 @@ class Simulation():
                 
                 self.conditions[index] = conds
                 
-        self.water_levels = np.tile(df['WL(m)'].values, 1)
+        self.water_levels = np.tile(df['WL(m)'].values, 1)  # length T, one per timestep (nothing reads the old extra t_end entry)
         
         return self.conditions
     
@@ -2564,13 +2563,17 @@ class Simulation():
             raise ValueError("'level' variable should have a value of 1, 2, 3, or 4")
         return self.forcing_data[f"soil_temperature_level_{level}.csv"].values[timestep_id]
 
-    def _get_timeseries(self, tstart, tend, fpath, flux_shift_hours=0):
-        """returns timeseries start from tstart and ending at tend. The filepath has to be specified.
+    def _get_timeseries(self, fpath, flux_shift_hours=0):
+        """returns the forcing timeseries of the file fpath at the model timestamps.
 
         flux_shift_hours (int): ERA5 'mean_surface_*' fluxes are mean rates over the hour *ending* at the time label, while
         the thermal model applies row t over [t, t+1h]. With flux_shift_hours = 1 the three mean_surface_* columns are shifted
         back one (hourly) record, so row t holds the mean over [t, t+1h]. 0 (default) applies no shift. The shift is done on
-        the full file, before the time mask, so the last model hour is also filled.
+        the full file, before the time selection, so the last model hour is also filled.
+
+        Row k is the file row at the model time self.timestamps[k]. With a model timestep longer than the forcing interval
+        the value at the start of the step is used, so hourly ERA5 means are sampled, not averaged.
+        A model timestamp missing from the file raises a ValueError.
 
         returns: pd.DataFrame of length T"""
 
@@ -2582,13 +2585,23 @@ class Simulation():
                 flux_cols = [c for c in df.columns if c.startswith('mean_surface_')]
                 df[flux_cols] = df[flux_cols].shift(-int(flux_shift_hours)).ffill()
 
-            # mask out correct time frame
-            mask = (df["time"] >= tstart) * (df["time"] < tend)
-            
-            # repeat time frame if required
-            df = pd.concat([df[mask]] * 1, ignore_index=True)
-                        
-        return df
+        return self._at_model_timestamps(df, fpath)
+
+    def _at_model_timestamps(self, df, fpath):
+        """Rows of df (with a 'time' column) at self.timestamps, in that order, with a RangeIndex and the columns of df.
+        Raises a ValueError for duplicate times within the run or for model timestamps that are not in the file."""
+        in_run = df[df['time'].isin(self.timestamps)]
+        duplicated = in_run.loc[in_run['time'].duplicated(), 'time']
+        if len(duplicated):
+            raise ValueError(f"{fpath}: {len(duplicated)} duplicated times within the run, first: "
+                             f"{', '.join(str(t) for t in duplicated.iloc[:5])}")
+        missing = self.timestamps.difference(pd.DatetimeIndex(in_run['time']))
+        if len(missing):
+            raise ValueError(f"{fpath}: {len(missing)} of {len(self.timestamps)} model timestamps are missing from the file, first: "
+                             f"{', '.join(str(t) for t in missing[:5])}")
+        out = in_run.set_index('time').reindex(self.timestamps)
+        out.index.name = 'time'
+        return out.reset_index()[list(df.columns)]
 
 
 
