@@ -24,11 +24,11 @@ import os
 from pathlib import Path
 
 # parameter set: a calibration study (journal .log or sqlite .db) or, with None, START_PARAMS of run_thermal_calibration.py
-STUDY_STORAGE = None   # e.g. Path(r"N:\arctic-xbeach-runs\thermal_calibration_runs\20261104_h7_truedepth_dt60\optuna_journal.log")
+STUDY_STORAGE = None   # e.g. Path(r"N:\arctic-xbeach-runs\thermal_calibration_runs\20261103_desktop_truedepth_dt60\optuna_study.db")
 STUDY_NAME = "calibration_optuna"
 TRIAL_NUMBER = None    # None = best trial of the study
 
-BASE_SIM_DIR = Path(r"N:\arctic-xbeach-runs\thermal_calibration_runs\20261104_h7_truedepth_dt60\base")  # template run folder
+BASE_SIM_DIR = Path(r"N:\arctic-xbeach-runs\thermal_calibration_runs\20261103_desktop_truedepth_dt60\base")  # template run folder
 OUT_ROOTS = {"validation_2011": Path(r"N:\arctic-xbeach-runs\thermal_validation_runs\20261104_v11_validation_2011"),
              "sensitivity": Path(r"N:\arctic-xbeach-runs\thermal_validation_runs\20261104_v11_sensitivity"),
              "dt_test": Path(r"N:\arctic-xbeach-runs\thermal_validation_runs\20261104_v11_dt_test")}
