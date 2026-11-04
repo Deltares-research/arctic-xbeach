@@ -25,6 +25,13 @@ are taken to be left by a killed earlier job and are marked FAIL.
 
 A trial with more failed XBeach calls than MAX_FAILED_XBEACH_CALLS (counted in results/xbeach_calls.csv) is not scored (inf):
 main.py logs a failed call and carries on, which would otherwise be scored as a run without that morphological change.
+The same limit is written to xbeach.max_failed_calls of every config, so a trial stops (exit code 3, scored inf) at the first failed
+call beyond it instead of running on for hours. AXB_XBEACH_LAUNCHER (xbeach.launcher) starts XBeach through a command prefix such as
+"mpirun -np 2" for MPI-only builds.
+
+Exit code: main() exits nonzero (so that sbatch --dependency=afterok holds the follow-up jobs) if no trial of the study has a finite
+value. With TIME_END set every trial stops before CALIB_END and is inf by design; the exit code then reports failed runs instead
+(a trial with a nonzero child exit code, failed XBeach calls beyond MAX_FAILED_XBEACH_CALLS, or a FAIL state).
 """
 # === CONFIGURATION ===
 # The AXB_* environment variables override the defaults below (used by hpc/h7/*.sbatch); without them nothing changes.
@@ -41,11 +48,12 @@ SHORELINES_CSV = Path(os.environ.get("AXB_SHORELINES_CSV", r"D:\Git\thermo-morph
 FORCING_CSV = Path(os.environ.get("AXB_FORCING_CSV", r"N:\arctic-xbeach-runs\database\era5.csv"))   # written into every config (None = keep the path of the base config)
 STORM_CSV = Path(os.environ.get("AXB_STORM_CSV", r"N:\arctic-xbeach-runs\database\storms.csv"))   # idem
 XBEACH_EXE = os.environ.get("AXB_XBEACH_EXE") or None   # path of xbeach.exe written into every config (None = keep the base config's)
+XBEACH_LAUNCHER = os.environ.get("AXB_XBEACH_LAUNCHER") or None   # command prefix written to xbeach.launcher of every config, e.g. "/opt/.../mpirun -np 2 --oversubscribe --bind-to none" for an MPI-only XBeach build (None = start the executable directly)
 
 N_TRIALS = int(os.environ.get("AXB_N_TRIALS", 10))          # completed trials the study should reach; a rerun on an existing study runs only the rest
                        # (published study: 25 epochs x 8 workers = 200)
 N_PARALLEL = int(os.environ.get("AXB_N_PARALLEL", 8))         # trials running at the same time (one child process each)
-MAX_FAILED_XBEACH_CALLS = int(os.environ.get("AXB_MAX_FAILED_XBEACH_CALLS", 0))  # a trial with more failed XBeach calls than this is not scored (inf)
+MAX_FAILED_XBEACH_CALLS = int(os.environ.get("AXB_MAX_FAILED_XBEACH_CALLS", 0))  # a trial with more failed XBeach calls than this is not scored (inf); also written to xbeach.max_failed_calls, so the run stops at the first failure beyond it
 TIME_END = os.environ.get("AXB_TIME_END") or None   # 'DD-MM-YYYY', replaces model.time_end of the template (short smoke test); None = keep it
 SEED = 1               # seed of the TPE sampler (with N_PARALLEL > 1 the order in which trials finish still varies)
 START_PARAMS = None    # enqueue this parameter set as the first trial of a new study. Example: the published best (trial 88, value 4.1222)
@@ -157,6 +165,9 @@ def apply_common_options(config: dict) -> dict:
         config["data"]["storm_data_path"] = str(STORM_CSV)
     if XBEACH_EXE is not None:
         config["xbeach"]["version"] = str(XBEACH_EXE)
+    if XBEACH_LAUNCHER is not None:
+        config["xbeach"]["launcher"] = XBEACH_LAUNCHER
+    config["xbeach"]["max_failed_calls"] = MAX_FAILED_XBEACH_CALLS  # main.py stops a run at the first failed call beyond this (the spin-up run has no XBeach, so it is not affected)
     config.setdefault("output", {})["log_xbeach_calls"] = True  # xbeach_calls.csv is how failed XBeach calls are counted
     return config
 
@@ -205,11 +216,15 @@ def prepare_template() -> Path:
     return template
 
 
+CHILD_EXIT_CODES: dict[str, int] = {}  # sim_dir -> exit code of its last child process; objective() stores it as a trial attribute
+
+
 def launch(sim_dir: Path) -> int:
     """Run main.py on sim_dir in a child process of the current interpreter and return its exit code."""
     script = sim_dir / "run_simulation_subprocess.py"
     script.write_text(CHILD_SCRIPT.format(repo=str(REPO_DIR), sim_dir=str(sim_dir)))
     result = subprocess.run([sys.executable, str(script)], cwd=str(sim_dir))
+    CHILD_EXIT_CODES[str(sim_dir)] = result.returncode
     print(f" => child process exit code {result.returncode}: {sim_dir.name}")  # a native crash leaves only this
     return result.returncode
 
@@ -435,6 +450,7 @@ def objective(trial: optuna.Trial) -> float:
         shutil.copytree(TEMPLATE, work_dir)
         update_config_yaml(work_dir, params, extra_model={"spinup_state_in": str(SPINUP_STATE)} if SPINUP_STATE else None)
         rmse, n_failed = run_simulation(work_dir)
+        trial.set_user_attr("exit_code", CHILD_EXIT_CODES.pop(str(work_dir), None))  # None if no child was launched (stubs)
     finally:  # also after a failed run: run.log is needed
         hpc.finish_trial_dir(work_dir, sim_dir, not REMOVE_RESULTS_NC, KEEP_XB_FILES)
     trial.set_user_attr("sim_dir", str(sim_dir))
@@ -447,6 +463,23 @@ def objective(trial: optuna.Trial) -> float:
     except Exception:
         pass
     return float(rmse)
+
+
+def study_exit_problem(study: optuna.Study) -> str | None:
+    """None if the study succeeded, else why the driver must exit nonzero. Prints which rule was applied.
+
+    Without TIME_END: at least one COMPLETE trial must have a finite value. With TIME_END (smoke run, ends before CALIB_END, so
+    every trial is inf by design): no trial may have a nonzero child exit code, more failed XBeach calls than allowed, or a FAIL state."""
+    trials = study.get_trials(deepcopy=False)
+    if TIME_END is None:
+        print("Exit code rule: the study needs at least one completed trial with a finite value")
+        n_ok = sum(t.state == optuna.trial.TrialState.COMPLETE and t.value is not None and np.isfinite(t.value) for t in trials)
+        return None if n_ok else f"None of the {len(trials)} trials has a finite value (all failed or were not scored; see the run.log of the trials)"
+    print(f"Exit code rule (AXB_TIME_END = {TIME_END}, scores are inf by design): no trial may have failed")
+    bad = [t.number for t in trials if t.state == optuna.trial.TrialState.FAIL
+           or t.user_attrs.get("exit_code") not in (0, None)
+           or (t.user_attrs.get("n_failed_xbeach_calls") or 0) > MAX_FAILED_XBEACH_CALLS]
+    return f"Trials {bad} failed (nonzero exit code, failed XBeach calls beyond {MAX_FAILED_XBEACH_CALLS}, or FAIL state)" if bad else None
 
 
 def main():
@@ -493,6 +526,12 @@ def main():
     except Exception as e:
         print(f"No completed trials or failed to summarise the study: {e}")
     gc.collect()
+
+    problem = study_exit_problem(study)
+    if problem:  # a nonzero exit code keeps sbatch --dependency=afterok from starting the follow-up jobs
+        hpc.append_log(print_log, f"STUDY FAILED: {problem}\n")
+        print(f"ERROR: {problem}")
+        sys.exit(1)
 
 
 if __name__ == "__main__":

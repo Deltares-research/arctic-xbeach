@@ -14,7 +14,7 @@ import yaml
 CALIB_DIR = Path(__file__).resolve().parents[1] / "calibration"
 AXB_VARIABLES = [
     "AXB_BASE_SIM_DIR", "AXB_RUN_ROOT", "AXB_OBS_CSV", "AXB_BLUFF_EDGES_CSV", "AXB_SHORELINES_CSV", "AXB_THERMAL_CONFIG_YAML",
-    "AXB_FORCING_CSV", "AXB_STORM_CSV", "AXB_XBEACH_EXE", "AXB_N_TRIALS", "AXB_N_PARALLEL", "AXB_STUDY_NAME", "AXB_THERMAL_DT",
+    "AXB_FORCING_CSV", "AXB_STORM_CSV", "AXB_XBEACH_EXE", "AXB_XBEACH_LAUNCHER", "AXB_N_TRIALS", "AXB_N_PARALLEL", "AXB_STUDY_NAME", "AXB_THERMAL_DT",
     "AXB_SENSOR_DEPTH_OFFSET", "AXB_STORAGE", "AXB_SCRATCH", "AXB_KEEP_XB_FILES", "AXB_CONSTANT_LIAR", "AXB_MAX_FAILED_XBEACH_CALLS", "AXB_TIME_END",
 ]
 
@@ -96,6 +96,26 @@ def test_coupled_without_xbeach_exe_keeps_the_base_config(monkeypatch, observati
     monkeypatch.setenv("AXB_SHORELINES_CSV", str(sl))
     monkeypatch.setenv("AXB_XBEACH_EXE", "")
     assert load_driver("auto_calibrate_coupled_model").XBEACH_EXE is None
+
+
+def test_coupled_launcher_and_failed_call_limit_end_up_in_the_config(monkeypatch, observations):
+    be, sl = observations
+    monkeypatch.setenv("AXB_BLUFF_EDGES_CSV", str(be))
+    monkeypatch.setenv("AXB_SHORELINES_CSV", str(sl))
+    m = load_driver("auto_calibrate_coupled_model")
+    assert m.XBEACH_LAUNCHER is None
+    config = m.apply_common_options(dict(thermal={}, data={}, xbeach={}))
+    assert "launcher" not in config["xbeach"] and config["xbeach"]["max_failed_calls"] == 0  # stop at the first failed call
+
+    monkeypatch.setenv("AXB_XBEACH_LAUNCHER", "/opt/mpi/bin/mpirun -np 2 --oversubscribe --bind-to none")
+    monkeypatch.setenv("AXB_MAX_FAILED_XBEACH_CALLS", "3")
+    m = load_driver("auto_calibrate_coupled_model")
+    config = m.apply_common_options(dict(thermal={}, data={}, xbeach={}))
+    assert config["xbeach"]["launcher"] == "/opt/mpi/bin/mpirun -np 2 --oversubscribe --bind-to none"
+    assert config["xbeach"]["max_failed_calls"] == 3
+
+    monkeypatch.setenv("AXB_XBEACH_LAUNCHER", "")  # empty switches it off
+    assert load_driver("auto_calibrate_coupled_model").XBEACH_LAUNCHER is None
 
 
 # --- (b) a driver run with a stub child ------------------------------------------------------------------------------
@@ -226,6 +246,79 @@ def test_coupled_trials_with_journal_and_scratch(monkeypatch, tmp_path, observat
         folder = tmp_path / "run" / f"optuna_trial_{number:06d}"
         assert (folder / "run.log").exists() and not (folder / "results" / "xb_files").exists()
     assert list((tmp_path / "scratch").iterdir()) == []
+
+
+# --- exit code of the coupled driver (sbatch --dependency=afterok) --------------------------------------------------------
+def coupled_main(monkeypatch, tmp_path, observations, run_fn, time_end=None, n_trials=2):
+    """Run main() of the coupled driver on a template and a stubbed run_simulation(sim_dir) -> (rmse, n_failed)."""
+    be, sl = observations
+    template = tmp_path / "template"
+    template.mkdir()
+    (template / "config.yaml").write_text(yaml.safe_dump(dict(model={}, xbeach={}, wrapper={})))
+    for var, value in dict(AXB_BLUFF_EDGES_CSV=be, AXB_SHORELINES_CSV=sl, AXB_RUN_ROOT=tmp_path / "run", AXB_STORAGE="journal",
+                           AXB_N_TRIALS=n_trials, AXB_N_PARALLEL=1).items():
+        monkeypatch.setenv(var, str(value))
+    m = load_driver("auto_calibrate_coupled_model")
+    monkeypatch.setattr(m, "prepare_template", lambda: template)
+    monkeypatch.setattr(m, "USE_SPINUP_STATE", False)
+    monkeypatch.setattr(m, "TIME_END", time_end)
+    monkeypatch.setattr(m, "MAKE_FIGURE", False)
+    monkeypatch.setattr(m, "run_simulation", run_fn)
+    return m
+
+
+def test_coupled_main_exits_nonzero_when_every_trial_is_inf(monkeypatch, tmp_path, observations, capsys):
+    m = coupled_main(monkeypatch, tmp_path, observations, lambda sim_dir: (float("inf"), None))
+    with pytest.raises(SystemExit) as exc:
+        m.main()
+    assert exc.value.code == 1
+    out = capsys.readouterr().out
+    assert "at least one completed trial with a finite value" in out and "ERROR: None of the 2 trials has a finite value" in out
+    assert "STUDY FAILED" in (tmp_path / "run" / "calibration_prints.txt").read_text()
+
+
+def test_coupled_main_exits_zero_when_one_trial_has_a_finite_value(monkeypatch, tmp_path, observations):
+    values = iter([float("inf"), 2.5])
+    m = coupled_main(monkeypatch, tmp_path, observations, lambda sim_dir: (next(values), 0))
+    m.main()  # no SystemExit
+    assert (tmp_path / "run" / "calibration_results.csv").exists()
+
+
+def test_coupled_trial_records_the_child_exit_code(monkeypatch, tmp_path, observations):
+    def run(sim_dir):
+        m.CHILD_EXIT_CODES[str(sim_dir)] = 3  # what launch() stores
+        return float("inf"), None
+
+    m = coupled_main(monkeypatch, tmp_path, observations, run, time_end="01-03-2012", n_trials=1)
+    with pytest.raises(SystemExit):
+        m.main()
+    assert journal_study(tmp_path).trials[0].user_attrs["exit_code"] == 3
+    assert m.CHILD_EXIT_CODES == {}
+
+
+def test_coupled_main_with_time_end_ignores_incomplete_scores(monkeypatch, tmp_path, observations, capsys):
+    """AXB_TIME_END: every trial stops before CALIB_END and is inf by design; clean child exits and no failed calls are a success."""
+    m = coupled_main(monkeypatch, tmp_path, observations, lambda sim_dir: (float("inf"), 0), time_end="01-03-2012")
+    m.main()  # no SystemExit
+    assert "AXB_TIME_END = 01-03-2012" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("n_failed, exit_code", [(2, 0), (None, 3)])
+def test_coupled_main_with_time_end_exits_nonzero_for_failed_runs(monkeypatch, tmp_path, observations, n_failed, exit_code):
+    def run(sim_dir):
+        m.CHILD_EXIT_CODES[str(sim_dir)] = exit_code
+        return float("inf"), n_failed
+
+    m = coupled_main(monkeypatch, tmp_path, observations, run, time_end="01-03-2012")
+    with pytest.raises(SystemExit) as exc:
+        m.main()
+    assert exc.value.code == 1
+
+
+def test_coupled_main_with_time_end_allows_failed_calls_up_to_the_limit(monkeypatch, tmp_path, observations):
+    m = coupled_main(monkeypatch, tmp_path, observations, lambda sim_dir: (float("inf"), 2), time_end="01-03-2012")
+    monkeypatch.setattr(m, "MAX_FAILED_XBEACH_CALLS", 2)
+    m.main()  # no SystemExit
 
 
 # --- finish_trial_dir without scratch ----------------------------------------------------------------------------------
