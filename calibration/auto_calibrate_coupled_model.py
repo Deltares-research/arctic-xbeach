@@ -32,10 +32,10 @@ import os
 from pathlib import Path
 
 REPO_DIR = Path(__file__).resolve().parents[1]  # arctic-xbeach checkout that is imported by the trials
-BASE_SIM_DIR = Path(os.environ.get("AXB_BASE_SIM_DIR", r"N:\arctic-xbeach-runs\coupled_calibration_runs\20260214_calibration_runs\base"))  # template run folder (config.yaml, x.grd, bed.dep, ne_layer.txt)
+BASE_SIM_DIR = Path(os.environ.get("AXB_BASE_SIM_DIR", r"N:\arctic-xbeach-runs\v11_runs\coupled_base_v11"))  # template run folder (config.yaml, x.grd, bed.dep, ne_layer.txt); the v1.0 base with CFL_xbeach 0.9 instead of 0.7
 RUN_ROOT_DIR = Path(os.environ.get("AXB_RUN_ROOT", r"N:\arctic-xbeach-runs\v11_runs\coupled_calibration"))  # template, spin-up state, trial folders, optuna_study.db (or optuna_journal.log), logs
 THERMAL_CONFIG_YAML = Path(os.environ.get("AXB_THERMAL_CONFIG_YAML", r"N:\arctic-xbeach-runs\v11_runs\thermal_calibration\optuna_trial_000490\config.yaml"))  # best thermal trial of step 1 (RMSE 0.8203 K); its thermal section replaces the template's. None = keep the template's thermal section
-THERMAL_DT = int(os.environ.get("AXB_THERMAL_DT", 90))        # [s] thermal timestep of the coupled runs, replaces thermal.dt of the config above (trial 490 was calibrated at 360 s, too large for a wet surface node). None = keep it
+THERMAL_DT = int(os.environ.get("AXB_THERMAL_DT", 60))        # [s] thermal timestep of the coupled runs, replaces thermal.dt of the config above. 60 s, as the thermal calibration (wet surface node limit). None = keep it
 BLUFF_EDGES_CSV = Path(os.environ.get("AXB_BLUFF_EDGES_CSV", r"D:\Git\thermo-morphological-model\database\ts_datasets\bluff_edges_without_geometry.csv"))  # columns time, distance_from_ref
 SHORELINES_CSV = Path(os.environ.get("AXB_SHORELINES_CSV", r"D:\Git\thermo-morphological-model\database\ts_datasets\shore_lines_without_geometry.csv"))
 FORCING_CSV = Path(os.environ.get("AXB_FORCING_CSV", r"N:\arctic-xbeach-runs\database\era5.csv"))   # written into every config (None = keep the path of the base config)
