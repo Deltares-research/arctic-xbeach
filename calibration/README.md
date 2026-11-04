@@ -65,9 +65,10 @@ desktop nothing needs to be set. `hpc/h7/*.sbatch` sets them for the Deltares H7
 | `AXB_THERMAL_CONFIG_YAML` | coupled | `config.yaml` of the best thermal trial |
 | `AXB_FORCING_CSV`, `AXB_STORM_CSV` | both | ERA5 forcing and storm table, written into every trial config |
 | `AXB_XBEACH_EXE` | coupled | path of the XBeach executable written into every config (empty = keep the base config's) |
+| `AXB_XBEACH_LAUNCHER` | coupled | command prefix written to `xbeach.launcher` of every config (`main.py` starts XBeach as `<launcher> <xbeach.version>`, without a shell), e.g. `/opt/apps/openmpi/4.1.5_gcc12.2.0/bin/mpirun -np 2 --oversubscribe --bind-to none` for the MPI-only XBeach modules on H7 (empty = start the executable directly) |
 | `AXB_N_TRIALS`, `AXB_N_PARALLEL` | both | completed trials to reach, trials at the same time |
-| `AXB_MAX_FAILED_XBEACH_CALLS` | coupled | a trial with more failed XBeach calls (rows with `success` 0 in `results/xbeach_calls.csv`) than this gets `inf` (0); the count is the trial attribute `n_failed_xbeach_calls` |
-| `AXB_TIME_END` | coupled | `DD-MM-YYYY`, replaces `model.time_end` of the template (short smoke test; unset = keep it) |
+| `AXB_MAX_FAILED_XBEACH_CALLS` | coupled | a trial with more failed XBeach calls (rows with `success` 0 in `results/xbeach_calls.csv`) than this gets `inf` (0); the count is the trial attribute `n_failed_xbeach_calls`. The same limit is written to `xbeach.max_failed_calls` of every config, so `main.py` stops the trial (exit code 3, scored `inf`) at the first failed call beyond it instead of running on; the failed call is already in `xbeach_calls.csv` |
+| `AXB_TIME_END` | coupled | `DD-MM-YYYY`, replaces `model.time_end` of the template (short smoke test; unset = keep it). Every trial then ends before the calibration period and is `inf` by design |
 | `AXB_STUDY_NAME` | both | Optuna study name (`calibration_optuna`) |
 | `AXB_THERMAL_DT` | both | thermal time step [s] (thermal 60, coupled 90) |
 | `AXB_SENSOR_DEPTH_OFFSET` | thermal | [m] added to the sensor depths (0.0) |
@@ -76,6 +77,7 @@ desktop nothing needs to be set. `hpc/h7/*.sbatch` sets them for the Deltares H7
 | `AXB_KEEP_XB_FILES` | both | `1` (default) keeps `results/xb_files` of a trial; `0` deletes it after scoring (without scratch) |
 | `AXB_CONSTANT_LIAR` | both | `1` = TPE `constant_liar`, `0` (default) = off |
 
+* **Exit code.** `auto_calibrate_coupled_model.py` exits 1 (so that `sbatch --dependency=afterok` holds follow-up jobs) when no trial of the study has a finite value. With `AXB_TIME_END` set that rule would always fire, so it exits 1 only if a trial failed: nonzero child exit code (trial attribute `exit_code`), more failed XBeach calls than `AXB_MAX_FAILED_XBEACH_CALLS`, or a FAIL state. The driver prints which rule it applied.
 * **Journal storage.** SQLite file locking is not reliable on NFS (`/u` on H7). `AXB_STORAGE=journal` keeps the study in one append-only
   file, `RUN_ROOT/optuna_journal.log`, opened with Optuna's `JournalFileOpenLock`, which the Optuna documentation gives as safe on NFS.
   `export_history.py` reads such a study with `AXB_RUN_ROOT` (the run folder), `AXB_STORAGE=journal` and optionally `AXB_STUDY_NAME`,

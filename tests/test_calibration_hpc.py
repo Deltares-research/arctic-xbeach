@@ -3,6 +3,8 @@
 No model is run: the child process / scoring function of a driver is replaced by a stub that writes the files a run leaves behind.
 """
 import importlib.util
+import shutil
+import subprocess
 import sys
 from pathlib import Path
 
@@ -319,6 +321,37 @@ def test_coupled_main_with_time_end_allows_failed_calls_up_to_the_limit(monkeypa
     m = coupled_main(monkeypatch, tmp_path, observations, lambda sim_dir: (float("inf"), 2), time_end="01-03-2012")
     monkeypatch.setattr(m, "MAX_FAILED_XBEACH_CALLS", 2)
     m.main()  # no SystemExit
+
+
+# --- hpc/h7/coupled_calibration.sbatch ---------------------------------------------------------------------------------
+SBATCH_COUPLED = CALIB_DIR.parent / "hpc" / "h7" / "coupled_calibration.sbatch"
+
+
+def test_coupled_sbatch_loads_trunk_and_starts_xbeach_through_mpirun():
+    text = SBATCH_COUPLED.read_text()
+    loads = [line for line in text.splitlines() if line.startswith("module load xbeach/")]
+    assert loads == ["module load xbeach/xbeach-trunk_gcc_12.2.0_openmpi_4.1.5_HEAD"]  # Halloween is MPI-only and crashes at hotstart writing
+    assert "export AXB_MPIRUN=${AXB_MPIRUN:-/opt/apps/openmpi/4.1.5_gcc12.2.0/bin/mpirun}" in text
+    assert "export AXB_XBEACH_NP=${AXB_XBEACH_NP:-2}" in text
+    # '-' and not ':-': AXB_XBEACH_LAUNCHER= (empty) must stay empty and switch the launcher off
+    assert 'export AXB_XBEACH_LAUNCHER=${AXB_XBEACH_LAUNCHER-"$AXB_MPIRUN -np $AXB_XBEACH_NP --oversubscribe --bind-to none"}' in text
+    assert "export AXB_N_PARALLEL=${AXB_N_PARALLEL:-$((SLURM_CPUS_PER_TASK - 1))}" in text
+    assert "(SLURM_CPUS_PER_TASK - 1) / AXB_XBEACH_NP" in text  # the alternative that is being tested
+    assert "OMPI_MCA_hwloc_base_binding_policy=none" in text
+
+
+def test_coupled_sbatch_runs_the_preflight_before_the_driver():
+    text = SBATCH_COUPLED.read_text()
+    assert "AXB_XBEACH_PREFLIGHT_DIR=${AXB_XBEACH_PREFLIGHT_DIR-$DATA/xbeach_preflight}" in text
+    for needle in ("timeout 900", "|| rc=$?", "xboutput.nc", "hotstart_*.dat", "writehotstart", "XBerror.txt"):
+        assert needle in text
+    assert text.index("File lock probe OK") < text.index("AXB_XBEACH_PREFLIGHT_DIR=${") < text.index("python -u calibration/auto_calibrate_coupled_model.py")
+
+
+@pytest.mark.skipif(shutil.which("bash") is None, reason="no bash")
+def test_coupled_sbatch_is_valid_bash():
+    result = subprocess.run([shutil.which("bash"), "-n"], input=SBATCH_COUPLED.read_bytes(), capture_output=True)  # script on stdin: no path translation
+    assert result.returncode == 0, result.stderr.decode()
 
 
 # --- finish_trial_dir without scratch ----------------------------------------------------------------------------------
