@@ -42,6 +42,7 @@ import arctic_xbeach.diagnostics as dg
 from arctic_xbeach.config_loader import load_config
 import hashlib
 import json
+import shlex
 import subprocess
 import matplotlib.pyplot as plt
 import logging
@@ -933,7 +934,12 @@ class Simulation():
 
         XBeach runs in the destination folder (cwd of the child, so it also works when that is on another drive than the
         current one). On a nonzero exit code the tail of XBerror.txt (or else of stderr) is logged and False is returned.
-        An executable that cannot be started (OSError) is a configuration error and is raised.
+        An executable (or launcher) that cannot be started (OSError) is a configuration error and is raised.
+
+        xbeach.launcher (optional config key, a string) is a command prefix, e.g. "/opt/.../mpirun -np 2 --oversubscribe --bind-to none"
+        for an MPI-only XBeach build; the argv is then [*prefix, xbeach_path]. It is split with shlex (posix=False on Windows, where
+        quotes stay in the tokens: use a path without spaces there) and still started without a shell. Empty or missing: the
+        executable is started directly.
 
         returns boolean (True if process was a sucess, False if not)
         """
@@ -943,12 +949,20 @@ class Simulation():
         else:
             work_dir = self.cwd
             
+        launcher = (self.config.xbeach.get('launcher') or '').strip()
+        prefix = shlex.split(launcher, posix=os.name != "nt") if launcher else []
+        if prefix and not getattr(self, '_launcher_logged', False):
+            logger.info(f"XBeach is started through the launcher: {launcher}")
+            self._launcher_logged = True
+        argv = [*prefix, str(xbeach_path)]
+
         try:  # stdin closed so that a wrong executable cannot wait for input
-            result = subprocess.run([str(xbeach_path)], cwd=work_dir, stdin=subprocess.DEVNULL,
+            result = subprocess.run(argv, cwd=work_dir, stdin=subprocess.DEVNULL,
                                     stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
         except OSError as e:  # missing or not runnable: a configuration error, stop the run instead of running on without morphology
-            logger.error(f"Could not start XBeach executable {xbeach_path}: {e}")
-            raise type(e)(f"Could not start the XBeach executable {xbeach_path} (xbeach.version in config.yaml): {e}") from e
+            what = f"launcher {prefix[0]} (xbeach.launcher in config.yaml)" if prefix else f"executable {xbeach_path} (xbeach.version in config.yaml)"
+            logger.error(f"Could not start XBeach {what}: {e}")
+            raise type(e)(f"Could not start the XBeach {what}: {e}") from e
 
         if result.returncode != 0:
             error_file = Path(work_dir) / "XBerror.txt"
