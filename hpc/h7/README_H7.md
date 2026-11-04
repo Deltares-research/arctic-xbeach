@@ -99,7 +99,7 @@ The coupled run starts many XBeach processes at once, so test it with several tr
 window. `AXB_TIME_END` (`DD-MM-YYYY`) replaces `model.time_end` of the template; the spin-up is still the full 10 years, so the window must
 end after it and should contain open water, or no XBeach call is made (`xbeach_calls.csv` is then missing and the trial gets `inf`). The
 published base starts on 01-01-2002 with a spin-up of 10 years, so `01-10-2012` covers the 2012 open-water season; check `time_start` and
-`spin_up_time` in `coupled_base/config.yaml`. The job needs `AXB_N_PARALLEL + 1` cores. With `AXB_TIME_END` set every trial stops before the end of the calibration period and gets `inf` by design, so the job
+`spin_up_time` in `coupled_base/config.yaml`. The job needs `AXB_N_PARALLEL + 1` cores. With `AXB_TIME_END` set a trial is scored only up to that date and can be `inf` without having failed, so the job
 exits nonzero only if a trial failed (child exit code, failed XBeach calls beyond the limit); without it the job exits nonzero when no trial has a finite value.
 
 ```bash

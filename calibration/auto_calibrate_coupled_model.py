@@ -30,7 +30,7 @@ call beyond it instead of running on for hours. AXB_XBEACH_LAUNCHER (xbeach.laun
 "mpirun -np 2" for MPI-only builds.
 
 Exit code: main() exits nonzero (so that sbatch --dependency=afterok holds the follow-up jobs) if no trial of the study has a finite
-value. With TIME_END set every trial stops before CALIB_END and is inf by design; the exit code then reports failed runs instead
+value. With TIME_END set (smoke run) a trial is scored only up to TIME_END and may be inf for lack of observations; the exit code then reports failed runs instead
 (a trial with a nonzero child exit code, failed XBeach calls beyond MAX_FAILED_XBEACH_CALLS, or a FAIL state).
 """
 # === CONFIGURATION ===
@@ -468,14 +468,14 @@ def objective(trial: optuna.Trial) -> float:
 def study_exit_problem(study: optuna.Study) -> str | None:
     """None if the study succeeded, else why the driver must exit nonzero. Prints which rule was applied.
 
-    Without TIME_END: at least one COMPLETE trial must have a finite value. With TIME_END (smoke run, ends before CALIB_END, so
-    every trial is inf by design): no trial may have a nonzero child exit code, more failed XBeach calls than allowed, or a FAIL state."""
+    Without TIME_END: at least one COMPLETE trial must have a finite value. With TIME_END (smoke run, scored only up to TIME_END,
+    so a clean trial can still be inf): no trial may have a nonzero child exit code, more failed XBeach calls than allowed, or a FAIL state."""
     trials = study.get_trials(deepcopy=False)
     if TIME_END is None:
         print("Exit code rule: the study needs at least one completed trial with a finite value")
         n_ok = sum(t.state == optuna.trial.TrialState.COMPLETE and t.value is not None and np.isfinite(t.value) for t in trials)
         return None if n_ok else f"None of the {len(trials)} trials has a finite value (all failed or were not scored; see the run.log of the trials)"
-    print(f"Exit code rule (AXB_TIME_END = {TIME_END}, scores are inf by design): no trial may have failed")
+    print(f"Exit code rule (AXB_TIME_END = {TIME_END}, smoke run): no trial may have failed")
     bad = [t.number for t in trials if t.state == optuna.trial.TrialState.FAIL
            or t.user_attrs.get("exit_code") not in (0, None)
            or (t.user_attrs.get("n_failed_xbeach_calls") or 0) > MAX_FAILED_XBEACH_CALLS]

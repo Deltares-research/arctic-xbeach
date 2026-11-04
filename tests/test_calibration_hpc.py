@@ -299,7 +299,7 @@ def test_coupled_trial_records_the_child_exit_code(monkeypatch, tmp_path, observ
 
 
 def test_coupled_main_with_time_end_ignores_incomplete_scores(monkeypatch, tmp_path, observations, capsys):
-    """AXB_TIME_END: every trial stops before CALIB_END and is inf by design; clean child exits and no failed calls are a success."""
+    """AXB_TIME_END: a smoke trial can be inf without failing; clean child exits and no failed calls are a success."""
     m = coupled_main(monkeypatch, tmp_path, observations, lambda sim_dir: (float("inf"), 0), time_end="01-03-2012")
     m.main()  # no SystemExit
     assert "AXB_TIME_END = 01-03-2012" in capsys.readouterr().out

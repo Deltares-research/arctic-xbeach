@@ -68,7 +68,7 @@ desktop nothing needs to be set. `hpc/h7/*.sbatch` sets them for the Deltares H7
 | `AXB_XBEACH_LAUNCHER` | coupled | command prefix written to `xbeach.launcher` of every config (`main.py` starts XBeach as `<launcher> <xbeach.version>`, without a shell), e.g. `/opt/apps/openmpi/4.1.5_gcc12.2.0/bin/mpirun -np 2 --oversubscribe --bind-to none` for the MPI-only XBeach modules on H7 (empty = start the executable directly) |
 | `AXB_N_TRIALS`, `AXB_N_PARALLEL` | both | completed trials to reach, trials at the same time |
 | `AXB_MAX_FAILED_XBEACH_CALLS` | coupled | a trial with more failed XBeach calls (rows with `success` 0 in `results/xbeach_calls.csv`) than this gets `inf` (0); the count is the trial attribute `n_failed_xbeach_calls`. The same limit is written to `xbeach.max_failed_calls` of every config, so `main.py` stops the trial (exit code 3, scored `inf`) at the first failed call beyond it instead of running on; the failed call is already in `xbeach_calls.csv` |
-| `AXB_TIME_END` | coupled | `DD-MM-YYYY`, replaces `model.time_end` of the template (short smoke test; unset = keep it). Every trial then ends before the calibration period and is `inf` by design |
+| `AXB_TIME_END` | coupled | `DD-MM-YYYY`, replaces `model.time_end` of the template (short smoke test; unset = keep it). A trial is then scored only up to that date (it can be `inf` when no observation falls before it); the driver exits nonzero only if a run failed |
 | `AXB_STUDY_NAME` | both | Optuna study name (`calibration_optuna`) |
 | `AXB_THERMAL_DT` | both | thermal time step [s] (thermal 60, coupled 90) |
 | `AXB_SENSOR_DEPTH_OFFSET` | thermal | [m] added to the sensor depths (0.0) |
