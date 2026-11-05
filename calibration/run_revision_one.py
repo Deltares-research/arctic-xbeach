@@ -25,6 +25,7 @@ import csv
 import datetime
 import subprocess
 import sys
+import time
 import traceback
 
 # Same child script as the coupled driver (calibration/auto_calibrate_coupled_model.py CHILD_SCRIPT)
@@ -80,6 +81,25 @@ def main() -> int:
         return 2
 
     status = run_dir / "model_exit_code.txt"   # also read by the collector
+    # A run started outside the pool (4 Nov: rr15/rr16 as their own jobs) holds the folder's run.lock; the pool's later start of the
+    # same id waits for it to end instead of failing on the lock, so the collector never sees a false failure. No second model run.
+    sys.path.insert(0, str(REPO_DIR))
+    from arctic_xbeach.run_lock import acquire_run_lock, release_run_lock
+    waited = False
+    while not DRY_RUN:
+        try:
+            release_run_lock(acquire_run_lock(run_dir))
+            break
+        except RuntimeError as e:
+            if not waited:
+                log(f"{run_id}: {e} Waiting for that run to end; this job does not start a second one.")
+                waited = True
+            time.sleep(60)
+    if waited:
+        code = status.read_text().split()[:1] if status.exists() else ["?"]
+        log(f"{run_id}: the other run ended, model_exit_code {code[0]}; nothing more to do here")
+        return 0 if code == ["0"] else 1
+
     rc = None
     if status.exists() and status.read_text().split()[:1] == ["0"]:
         rc = 0
