@@ -54,6 +54,8 @@ N_TRIALS = int(os.environ.get("AXB_N_TRIALS", 10))          # completed trials t
                        # (published study: 25 epochs x 8 workers = 200)
 N_PARALLEL = int(os.environ.get("AXB_N_PARALLEL", 8))         # trials running at the same time (one child process each)
 MAX_FAILED_XBEACH_CALLS = int(os.environ.get("AXB_MAX_FAILED_XBEACH_CALLS", 0))  # a trial with more failed XBeach calls than this is not scored (inf); also written to xbeach.max_failed_calls, so the run stops at the first failure beyond it
+OUTPUT_RES = int(os.environ.get("AXB_OUTPUT_RES", 24))       # [h] thermal record spacing of the trial results.nc. Hourly 2D thermal fields reached ~4.6 GB per trial
+                                                             # within 8 h and 43 trials filled a 138 GB H7 scratch (5 Nov 2026); the scorer needs only the XBeach records, written at every call
 TIME_END = os.environ.get("AXB_TIME_END") or None   # 'DD-MM-YYYY', replaces model.time_end of the template (short smoke test); None = keep it
 SEED = 1               # seed of the TPE sampler (with N_PARALLEL > 1 the order in which trials finish still varies)
 START_PARAMS = None    # enqueue this parameter set as the first trial of a new study. Example: the published best (trial 88, value 4.1222)
@@ -168,6 +170,7 @@ def apply_common_options(config: dict) -> dict:
     if XBEACH_LAUNCHER is not None:
         config["xbeach"]["launcher"] = XBEACH_LAUNCHER
     config["xbeach"]["max_failed_calls"] = MAX_FAILED_XBEACH_CALLS  # main.py stops a run at the first failed call beyond this (the spin-up run has no XBeach, so it is not affected)
+    config.setdefault("output", {})["output_res"] = OUTPUT_RES  # the spin-up run overrides this with 10**9
     config.setdefault("output", {})["log_xbeach_calls"] = True  # xbeach_calls.csv is how failed XBeach calls are counted
     return config
 

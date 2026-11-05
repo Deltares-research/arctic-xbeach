@@ -2407,7 +2407,9 @@ class Simulation():
 
     def write_output(self, timestep_id, t_start):
 
-        """Append one time-slice to results.nc."""
+        """Append one time-slice to results.nc: the thermal record if timestep_id is an output step (temp_output_ids), the XBeach
+        record if XBeach ran successfully at this step. main.py calls this for both, so every successful call is recorded
+        whatever output_res is (and also outside output_start/output_end)."""
         self._ensure_nc_writer()
 
         # time index and seconds since t0
@@ -2415,7 +2417,7 @@ class Simulation():
             i = len(self.nc_writer.v["time"])  # next index
         else:
             i = 0
-        # next XBeach record: count the records written, not the calls made (calls between output steps are never written)
+        # next XBeach record: count the records written, not the calls made (failed calls are never written)
         if "time_xbeach" in self.nc_writer.v:
             i_xb = len(self.nc_writer.v["time_xbeach"])
         else:
@@ -2467,49 +2469,50 @@ class Simulation():
             Z = np.zeros_like(xgr_xb, dtype="f4")
             H=zb=zs=E=Sxx=Sxy=Syy=vmag=urms = Z
 
-        # water level on xgr
-        wl_line = np.asarray(self._update_water_level(timestep_id), dtype="f4")
-        if wl_line.ndim == 0:  # if scalar returned, expand to xgr
-            wl_line = np.full((len(self.xgr),), wl_line, dtype="f4")
+        if timestep_id in self.temp_output_ids:  # thermal record only at output steps (main.py also calls this at XBeach calls)
+            # water level on xgr
+            wl_line = np.asarray(self._update_water_level(timestep_id), dtype="f4")
+            if wl_line.ndim == 0:  # if scalar returned, expand to xgr
+                wl_line = np.full((len(self.xgr),), wl_line, dtype="f4")
 
-        # pack 2D thermo fields (xgr, depth_id)
-        gt  = self.temp_matrix.astype("f4")
-        ge  = self.enthalpy_matrix.astype("f4")
-        nb  = self.nb_matrix.astype("f4")
-        k   = self.k_matrix.astype("f4")
-        rho = self.soil_density_matrix.astype("f4")
+            # pack 2D thermo fields (xgr, depth_id)
+            gt  = self.temp_matrix.astype("f4")
+            ge  = self.enthalpy_matrix.astype("f4")
+            nb  = self.nb_matrix.astype("f4")
+            k   = self.k_matrix.astype("f4")
+            rho = self.soil_density_matrix.astype("f4")
 
-        # append thermal parameters (use default "time" dimension)
-        self.nc_writer.append(i, {
-            "time": t_rel,
-            "timestep_id":  int(timestep_id),
-            "cumtime":      float(time.time() - t_start),
-            "zgr": self.zgr.astype("f4"),
-            "angles": self.angles.astype("f4"),
-            "abs_xgr": self.abs_xgr.astype("f4"),
-            "abs_zgr": self.abs_zgr.astype("f4"),
-            "ground_temperature_distribution": gt,
-            "ground_enthalpy_distribution":    ge,
-            "nb":  nb,
-            "k":   k,
-            "rho": rho,
-            "solar_radiation_factor":   self.factors.astype("f4"),
-            "solar_radiation_flux":     self.sw_flux.astype("f4"),
-            "long_wave_radiation_flux": self.lw_flux.astype("f4"),
-            "latent_heat_flux":         self.latent_flux.astype("f4"),
-            "convective_heat_flux":     self.convective_flux.astype("f4"),
-            "total_heat_flux":          self.heat_flux.astype("f4"),
-            "thaw_depth":               self.thaw_depth.astype("f4"),
-            "air_temperature_2m":       float(self.current_air_temp),
-            "sea_surface_temperature":  float(self.current_sea_temp),
-            "sea_ice_cover":            float(self.current_sea_ice),
-            "wind_velocity":            float(self.wind_velocity),
-            "wind_direction":           float(self.wind_direction),
-            "water_level_offshore":     self.conditions[timestep_id]['WL(m)'],
-            "wave_height_offshore":     self.conditions[timestep_id]['Hs(m)'],
-            "beta_f":                   float(self.beta_f[timestep_id]),
-            "run_up2pct":               float(self.R2[timestep_id]),
-        }, time_dim="time")
+            # append thermal parameters (use default "time" dimension)
+            self.nc_writer.append(i, {
+                "time": t_rel,
+                "timestep_id":  int(timestep_id),
+                "cumtime":      float(time.time() - t_start),
+                "zgr": self.zgr.astype("f4"),
+                "angles": self.angles.astype("f4"),
+                "abs_xgr": self.abs_xgr.astype("f4"),
+                "abs_zgr": self.abs_zgr.astype("f4"),
+                "ground_temperature_distribution": gt,
+                "ground_enthalpy_distribution":    ge,
+                "nb":  nb,
+                "k":   k,
+                "rho": rho,
+                "solar_radiation_factor":   self.factors.astype("f4"),
+                "solar_radiation_flux":     self.sw_flux.astype("f4"),
+                "long_wave_radiation_flux": self.lw_flux.astype("f4"),
+                "latent_heat_flux":         self.latent_flux.astype("f4"),
+                "convective_heat_flux":     self.convective_flux.astype("f4"),
+                "total_heat_flux":          self.heat_flux.astype("f4"),
+                "thaw_depth":               self.thaw_depth.astype("f4"),
+                "air_temperature_2m":       float(self.current_air_temp),
+                "sea_surface_temperature":  float(self.current_sea_temp),
+                "sea_ice_cover":            float(self.current_sea_ice),
+                "wind_velocity":            float(self.wind_velocity),
+                "wind_direction":           float(self.wind_direction),
+                "water_level_offshore":     self.conditions[timestep_id]['WL(m)'],
+                "wave_height_offshore":     self.conditions[timestep_id]['Hs(m)'],
+                "beta_f":                   float(self.beta_f[timestep_id]),
+                "run_up2pct":               float(self.R2[timestep_id]),
+            }, time_dim="time")
         
         # append XBeach parameters (use "time_xbeach" dimension)
         # Only write XBeach data if XBeach ran successfully at this timestep (xbeach_times is 2.0 for a storm on an inter-storm call)

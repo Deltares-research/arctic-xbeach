@@ -402,7 +402,8 @@ def _main(sim, print_to_screen=True):
         # ---------------------------------------------------------------------
         # Output Generation
         # ---------------------------------------------------------------------
-        if timestep_id in sim.temp_output_ids:
+        # thermal records every output_res steps; XBeach records at every successful call, so a coarse output_res keeps them all
+        if timestep_id in sim.temp_output_ids or sim.xbeach_success[timestep_id]:
             sim.write_output(timestep_id, t_start)
             logger.debug("Successfully generated output")
 
