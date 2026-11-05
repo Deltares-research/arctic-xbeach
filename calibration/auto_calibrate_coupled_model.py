@@ -491,8 +491,12 @@ def main():
     TEMPLATE = prepare_template()
     if USE_SPINUP_STATE:
         SPINUP_STATE = ensure_spinup_state(TEMPLATE)
+    if N_TRIALS == 0:  # spin-up only (e.g. on a small node while the study job waits with --dependency=afterok)
+        hpc.append_log(print_log, f"N_TRIALS = 0: spin-up only, no study opened. Spin-up state: {SPINUP_STATE}\n")
+        print(f"N_TRIALS = 0: spin-up only, no study opened. Spin-up state: {SPINUP_STATE}")
+        return
 
-    study = hpc.open_study(STUDY_NAME, RUN_ROOT_DIR, STORAGE, optuna.samplers.TPESampler(seed=SEED, constant_liar=CONSTANT_LIAR))  # a rerun continues the study
+    study =hpc.open_study(STUDY_NAME, RUN_ROOT_DIR, STORAGE, optuna.samplers.TPESampler(seed=SEED, constant_liar=CONSTANT_LIAR))  # a rerun continues the study
     if START_PARAMS is not None and len(study.trials) == 0:
         study.enqueue_trial(START_PARAMS)  # first trial of a new study
 

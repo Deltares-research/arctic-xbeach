@@ -120,6 +120,9 @@ Check:
 * `coupled_smoke/spinup_state.npz` exists. It can be copied into the production `AXB_RUN_ROOT` (`mkdir -p coupled_calibration; cp
   coupled_smoke/spinup_state.npz coupled_calibration/`) to save the spin-up there. A trial refuses a state that was made with a different
   thermal config (thermal hash), so a wrong copy cannot be used silently.
+* Spin-up on a small node: submit the same sbatch with `AXB_N_TRIALS=0` (e.g. `-p 4vcpu --cpus-per-task=4`) and the same
+  `AXB_RUN_ROOT` and thermal settings as the study. It writes `spinup_state.npz` and exits 0 without opening a study, so the
+  study job can wait for it with `--dependency=afterok:<jobid>` and start its trials at once.
 
 ## Full run
 

@@ -286,6 +286,14 @@ def test_coupled_main_exits_zero_when_one_trial_has_a_finite_value(monkeypatch, 
     assert (tmp_path / "run" / "calibration_results.csv").exists()
 
 
+def test_coupled_main_with_zero_trials_only_makes_the_spin_up(monkeypatch, tmp_path, observations, capsys):
+    """AXB_N_TRIALS=0: spin-up job for a small node; exits 0 without a study, so afterok releases the study job."""
+    m = coupled_main(monkeypatch, tmp_path, observations, lambda sim_dir: pytest.fail("no trial may run"), n_trials=0)
+    m.main()  # no SystemExit
+    assert "spin-up only" in capsys.readouterr().out
+    assert not (tmp_path / "run" / "optuna_journal.log").exists()
+
+
 def test_coupled_trial_records_the_child_exit_code(monkeypatch, tmp_path, observations):
     def run(sim_dir):
         m.CHILD_EXIT_CODES[str(sim_dir)] = 3  # what launch() stores
