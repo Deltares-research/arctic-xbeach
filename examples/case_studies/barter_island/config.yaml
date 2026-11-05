@@ -1,6 +1,8 @@
-# Barter Island case study with the PUBLISHED parameter set (coupled calibration trial 88, which contains the thermal
-# calibration trial 869). Source: coupled_calibration_runs/20260214_calibration_runs/optuna_trial_000088/config.yaml.
-# The solver options below are set to their legacy (v1.0) values; the flux and volumetric alternatives are listed with each option.
+# Barter Island case study with the v1.1 solver options (conduction_form: flux, latent_heat_form: volumetric) and the v1.1
+# thermal parameter set (thermal calibration trial 935, study thermal_v11_truedepth_dt60, calibrated with these options,
+# thermal dt 60 s and era5_flux_shift_hours 1). The XBeach and wrapper parameters are still those of the published coupled
+# calibration (trial 88, coupled_calibration_runs/20260214_calibration_runs/optuna_trial_000088/config.yaml).
+# The legacy (v1.0) values of each solver option are listed next to it.
 # Run time: the 10-year spin-up of the thermal module dominates. To skip it in repeated runs, save the state once with
 # model.spinup_state_out and load it with model.spinup_state_in (see below).
 
@@ -12,7 +14,7 @@ data:
   # v1.1 option. ERA5 'mean_surface_*' fluxes are means over the hour ENDING at the time label.
   # 0 = no shift (each row is applied over the hour that follows its label, v1.0);  1 = shift the three flux columns back one hour,
   # to the start of the averaging hour.
-  era5_flux_shift_hours : 0
+  era5_flux_shift_hours : 1
 
 # model settings
 model:
@@ -104,7 +106,7 @@ xbeach:
   facAs: 0.018829910025755153  # [-] Calibration factor time averaged flows due to wave asymmetry. Default is 0.20.
   facua: 0.018829910025755153  # [-] Calibration factor time averaged flows due to wave skewness and asymmetry. Default is 0.175.
 
-# thermal model parameters (calibrated against the borehole temperatures, thermal trial 869; frozen in the coupled calibration)
+# thermal model parameters (calibrated against the borehole temperatures, v1.1 thermal trial 935)
 thermal:
   L_water_ice: 334000  # [J/kg] latent heat of fusion of water
   MSL: 0
@@ -112,24 +114,24 @@ thermal:
   T_melt: 273.15
   angle_max: 89
   angle_min: -89
-  c_soil_frozen: 1574265.3175829535  # [J/m3/K] volumetric heat capacity, frozen
-  c_soil_unfrozen: 3103885.0192965684  # [J/m3/K] volumetric heat capacity, unfrozen
+  c_soil_frozen: 2164300.7640218576  # [J/m3/K] volumetric heat capacity, frozen
+  c_soil_unfrozen: 3651287.2323435405  # [J/m3/K] volumetric heat capacity, unfrozen
   delta_angle: 1
-  depth_constant_k: 1.395528377852392  # [m] depth at which k reaches its maximum
-  dt: 120  # [s] thermal time step
-  geothermal_gradient: 0.020426871031478094  # [K/m]
+  depth_constant_k: 0.746563032391277  # [m] depth at which k reaches its maximum
+  dt: 60  # [s] thermal time step (must divide the 3600 s model timestep)
+  geothermal_gradient: 0.022337779337643103  # [K/m]
   grid_interpolation: linear_interp_z
   grid_resolution: 200
   hc_guess: 500
-  k_soil_frozen_max: 1.7305832283149918  # [W/m/K]
-  k_soil_frozen_min: 0.9046457783637623
-  k_soil_unfrozen_max: 0.6305668303224798
-  k_soil_unfrozen_min: 0.3296227605203751
+  k_soil_frozen_max: 3.8479868748772628  # [W/m/K]
+  k_soil_frozen_min: 1.9990965419991373
+  k_soil_unfrozen_max: 0.5776467340478585
+  k_soil_unfrozen_min: 0.30009759026763894
   max_depth: 10  # [m]
-  nb_max: 0.7101082595355153  # [-] porosity (ice content) near the surface
-  nb_max_depth: 0.41887032171820293  # [m]
-  nb_min: 0.46951231603096133  # [-] porosity (ice content) at depth
-  nb_min_depth: 2.372186433986581  # [m]
+  nb_max: 0.7172711700765408  # [-] porosity (ice content) near the surface
+  nb_max_depth: 0.30771273315180353  # [m]
+  nb_min: 0.49546758264835705  # [-] porosity (ice content) at depth
+  nb_min_depth: 1.1854133316307505  # [m]
   rho_ice: 917
   rho_particle: 2650
   rho_soil: None
@@ -144,10 +146,10 @@ thermal:
   with_solar: true
   with_solar_flux_calculator: true
 
-  # v1.1 solver options. The values below are the v1.0 (legacy) ones.
-  # Alternatives are  conduction_form: flux  and  latent_heat_form: volumetric  (the thermal parameters are calibrated per option set).
-  conduction_form  : nodal     # nodal: k * d2T/dz2 with nodal k (v1.0, not conservative for k(z, phase)) | flux: conservative finite-volume form with harmonic-mean k at the cell faces
-  latent_heat_form : per_mass  # per_mass: L*nb per kg of soil (v1.0; volumetric latent heat rho_soil*L*nb) | volumetric: L*nb*rho_water/rho_soil
+  # v1.1 solver options. The values below are the v1.1 ones; the legacy (v1.0) alternatives are  conduction_form: nodal  and
+  # latent_heat_form: per_mass  (the thermal parameters are calibrated per option set).
+  conduction_form  : flux        # flux: conservative finite-volume form with harmonic-mean k at the cell faces | nodal: k * d2T/dz2 with nodal k (v1.0, not conservative for k(z, phase))
+  latent_heat_form : volumetric  # volumetric: L*nb*rho_water/rho_soil | per_mass: L*nb per kg of soil (v1.0; volumetric latent heat rho_soil*L*nb)
 
 # output
 output:

@@ -87,7 +87,7 @@ xbeach:
 
 # thermal moodel parameters
 thermal:
-  L_water_ice: 334000000
+  L_water_ice: 334000  # [J/kg] latent heat of fusion of water
   MSL: 0
   N_thaw_threshold: 3
   T_melt: 273.15
@@ -124,6 +124,10 @@ thermal:
   with_longwave: true
   with_solar: true
   with_solar_flux_calculator: true
+
+  # v1.1 solver options (legacy v1.0 alternatives:  conduction_form: nodal  and  latent_heat_form: per_mass)
+  conduction_form  : flux        # flux: conservative finite-volume form with harmonic-mean k at the cell faces | nodal: k * d2T/dz2 with nodal k (v1.0)
+  latent_heat_form : volumetric  # volumetric: L*nb*rho_water/rho_soil | per_mass: L*nb per kg of soil (v1.0; volumetric latent heat rho_soil*L*nb)
 
 # output
 output:
