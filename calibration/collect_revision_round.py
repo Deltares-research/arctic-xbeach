@@ -19,7 +19,8 @@ CALIB_DIR = Path(__file__).resolve().parent
 REGISTRY_JSON = Path.home() / ".claude" / "runs" / "registry.json"   # local-runs registry, read only
 COLLECT_INTERVAL_MIN = 60
 MAX_RUNTIME_H = 72     # safety cap: write a last summary and exit even if runs are still open (e.g. a lost job id)
-STALE_LOG_H = 3        # without a registry entry, a run.log not written for this long counts as failed
+STALE_LOG_H = 3        # without a registry entry, a run with no file written for this long counts as failed
+HEARTBEAT_FILES = ("run.log", "results/xbeach_calls.csv", "ne_layer.txt")   # run.log alone goes quiet for hours in storm stretches
 RUN_ONCE = os.environ.get("AXB_COLLECT_ONCE", "0") == "1"  # one pass, then exit (hourly check by hand or from a session)
 # === END CONFIGURATION ===
 
@@ -115,7 +116,10 @@ def run_state(run_dir: Path, entry: dict | None) -> str:
                 return "done"
             if "Simulation failed" in text:
                 return "failed"
-            age_h = (time.time() - log_file.stat().st_mtime) / 3600
+            # run.log only gets a line per 1 % of model time; in long storm stretches that is more than STALE_LOG_H,
+            # so the newest of the files every XBeach call writes counts as the heartbeat
+            newest = max((run_dir / f).stat().st_mtime for f in HEARTBEAT_FILES if (run_dir / f).exists())
+            age_h = (time.time() - newest) / 3600
         except OSError:
             return "running"
         return "running" if age_h < STALE_LOG_H else "failed"
