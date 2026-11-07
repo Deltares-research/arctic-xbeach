@@ -14,6 +14,12 @@ Steps (each is skipped if its output exists, so the job can be started again; al
   f  16 run folders, perturbed forcing copies, design.csv, check of every folder (config, Simulation, forcing, guards), READY
 
 DRY_RUN = True builds everything in <ROOT>_dryrun (A1 check and A2 to A4 skipped, no waiting for the CFL check) and starts nothing.
+
+Another round with the same machinery: set the environment variable AXB_ROUND_DESIGN to the name of a module in calibration/ (e.g.
+final_round_design). Its ROOT_BASE, S0*, PERTURBATIONS, HC_LONG_DT_RUN and the optional THERMAL_BEST_SOURCE, SKIP_A2_A4, CFL_FIXED,
+SPINUP_STATES, ID_PREFIX replace those below, and its build_runs(_run) returns the RUNS. Runs may reuse a saved spin-up
+(_run(..., spinup="<name of SPINUP_STATES>")); step f then proves for each such run that the state loads (see check_spinup_reuse).
+Without the variable the 16-run design below is built exactly as before.
 Run:  python -u calibration/run_revision_round.py     (launch_prep.bat in ROOT sets the thread variables)
 """
 # === CONFIGURATION ===
@@ -38,6 +44,14 @@ A2_A4_N_PARALLEL = 14
 CFL_SUMMARY = Path(r"N:\arctic-xbeach-runs\v11_runs\cfl09_check\cfl_check_summary.txt")
 CFL_DEFAULT, CFL_FALLBACK = 0.9, 0.7
 CFL_WAIT_MIN, CFL_POLL_S = 0, 30        # the CFL job is ahead of prep in the FIFO queue, so a missing summary means it failed: no wait
+
+# Optional per-design settings (set by the design module named in AXB_ROUND_DESIGN; the defaults keep the 16-run design as it was)
+DESIGN_MODULE = os.environ.get("AXB_ROUND_DESIGN") or None
+ID_PREFIX = "rr"                # run ids are <ID_PREFIX><NN>
+THERMAL_BEST_SOURCE = None      # Path of a thermal_best\config.yaml to reuse (with thermal_best.txt next to it or one level up) instead of A1's best trial
+SKIP_A2_A4 = False              # True: step b does nothing
+CFL_FIXED = None                # float: step c returns it without reading CFL_SUMMARY
+SPINUP_STATES = {}              # name -> source .npz; copied to <ROOT>\spinup\<name>.npz, used by _run(..., spinup=name)
 
 # Coupled template and forcing
 BASE_SIM_DIR = Path(r"N:\arctic-xbeach-runs\v11_runs\coupled_base_v11")
@@ -65,10 +79,12 @@ PERTURBATIONS = {
 }
 
 
-def _run(n, label, period, change, params=None, model=None, hc_guess=None, forcing=None):
-    """One row of the design: S0 plus `change`. params -> xbeach/wrapper, model -> model section, forcing -> key of PERTURBATIONS."""
-    return dict(id=f"rr{n:02d}", label=label, period=period, change=change, params=params or {}, model=model or {},
-                hc_guess=hc_guess, forcing=forcing)
+def _run(n, label, period, change, params=None, model=None, hc_guess=None, forcing=None, wrapper=None, thermal=None, spinup=None):
+    """One row of the design: S0 plus `change`. params -> xbeach/wrapper, model -> model section, forcing -> key of PERTURBATIONS.
+    wrapper / thermal: values of those sections that replace S0's (e.g. sea_ice_threshold, N_thaw_threshold); spinup: key of SPINUP_STATES,
+    the run restarts from that saved state (model.spinup_state_in)."""
+    return dict(id=f"{ID_PREFIX}{n:02d}", label=label, period=period, change=change, params=params or {}, model=model or {},
+                hc_guess=hc_guess, forcing=forcing, wrapper=wrapper or {}, thermal=thermal or {}, spinup=spinup)
 
 
 # In queue order (the order of the plan table)
@@ -94,6 +110,7 @@ HC_LONG_DT_RUN = 1210  # h_c value whose thermal dt is derived from the guard li
 # === END CONFIGURATION ===
 
 import datetime
+import importlib
 import json
 import math
 import re
@@ -108,6 +125,16 @@ for _var in ("OPENBLAS_NUM_THREADS", "OMP_NUM_THREADS", "MKL_NUM_THREADS"):
 
 sys.path.insert(0, str(CALIB_DIR))
 sys.path.insert(0, str(REPO_DIR))
+
+if DESIGN_MODULE:   # the design module replaces the design above (it must not import this module: run as a script this is __main__)
+    _design = importlib.import_module(DESIGN_MODULE)
+    for _name in ("ROOT_BASE", "S0", "S0_CALL_XBEACH_INTER", "S0_SEA_ICE_THRESHOLD", "S0_HC_GUESS", "PERTURBATIONS", "HC_LONG_DT_RUN",
+                  "THERMAL_BEST_SOURCE", "SKIP_A2_A4", "CFL_FIXED", "SPINUP_STATES", "ID_PREFIX"):
+        if hasattr(_design, _name):
+            globals()[_name] = getattr(_design, _name)
+    RUNS = _design.RUNS if hasattr(_design, "RUNS") else _design.build_runs(_run)
+for _spec in PERTURBATIONS.values():   # a design may leave out src: it is the base file of the target
+    _spec.setdefault("src", ERA5_CSV if _spec["target"] == "era5" else STORMS_CSV)
 
 ROOT = ROOT_BASE        # set in main() (<ROOT>_dryrun for DRY_RUN)
 
@@ -143,6 +170,16 @@ def step_a_thermal_best() -> Path:
         return cfg_out
     out_dir.mkdir(parents=True, exist_ok=True)
 
+    if THERMAL_BEST_SOURCE is not None:   # a thermal best chosen earlier (also in the dry run): copy it, no A1 database
+        src_txt = next((c for c in (THERMAL_BEST_SOURCE.with_name("thermal_best.txt"), THERMAL_BEST_SOURCE.parent.parent / "thermal_best.txt")
+                        if c.exists()), None)
+        if not THERMAL_BEST_SOURCE.exists() or src_txt is None:
+            fail(f"thermal best source incomplete: {THERMAL_BEST_SOURCE} or its thermal_best.txt is missing")
+        shutil.copy2(THERMAL_BEST_SOURCE, cfg_out)
+        txt_out.write_text(src_txt.read_text(encoding="utf-8").rstrip("\n") + f"\nreused from {THERMAL_BEST_SOURCE} (txt: {src_txt})\n", encoding="utf-8")
+        log(f"a: thermal best reused from {THERMAL_BEST_SOURCE}")
+        return cfg_out
+
     if DRY_RUN:
         shutil.copy2(A1_DRY_CONFIG, cfg_out)
         txt_out.write_text(f"DRY RUN: thermal config of {A1_DRY_CONFIG} (thermal trial 490)\n", encoding="utf-8")
@@ -175,6 +212,9 @@ def step_a_thermal_best() -> Path:
 
 # --- b: A2 to A4 -----------------------------------------------------------------------------------------------------------
 def step_b_thermal_experiments(best_trial_number: int | None) -> None:
+    if SKIP_A2_A4:
+        log("b: skipped by the design (SKIP_A2_A4)")
+        return
     if DRY_RUN:
         log("b: DRY RUN, A2 to A4 skipped")
         return
@@ -211,6 +251,9 @@ def step_b_thermal_experiments(best_trial_number: int | None) -> None:
 # --- c: CFL gate ------------------------------------------------------------------------------------------------------------
 def step_c_cfl() -> tuple[float, str]:
     """(CFL, reason). cfl_check.py writes one line per call: '... | exit <rc at 0.7>/<rc at 0.9> | NaN <bool>/<bool> | ...'."""
+    if CFL_FIXED is not None:
+        log(f"c: CFL {CFL_FIXED} fixed by design")
+        return CFL_FIXED, "fixed by design"
     waited = 0.0
     while not CFL_SUMMARY.exists():
         if DRY_RUN or waited >= CFL_WAIT_MIN * 60:
@@ -374,15 +417,34 @@ def flatten(d: dict, prefix: str = "") -> dict:
     return out
 
 
+def run_params(run: dict) -> dict:
+    """S0 plus the run's params. An N_thaw_threshold in run['thermal'] counts as a param: update_config_yaml then writes it to the wrapper
+    and xbeach sections, and the thermal section gets the same value (the model reads it from there)."""
+    params = {**S0, **run["params"]}
+    if "N_thaw_threshold" in run["thermal"]:
+        params["N_thaw_threshold"] = run["thermal"]["N_thaw_threshold"]
+    return params
+
+
+def spinup_copy(run: dict) -> Path | None:
+    """The copy of the saved spin-up state in this round that the run restarts from (<ROOT>/spinup/<name>.npz), or None."""
+    return ROOT / "spinup" / f"{run['spinup']}.npz" if run["spinup"] else None
+
+
+def run_model(run: dict) -> dict:
+    """model section values of the run: its model dict, plus spinup_state_in (absolute path) for a run that reuses a spin-up."""
+    return {**run["model"], **({"spinup_state_in": str(spinup_copy(run))} if run["spinup"] else {})}
+
+
 def run_settings(run: dict, dt: int, forcing_paths: dict[str, Path]) -> dict:
     """The values this run must have in its config.yaml: flat key -> value, for the build and for the check."""
     start, end = PERIODS[run["period"]]
+    params = run_params(run)
     want = {"model.time_start": start, "model.time_end": end, "model.spin_up_time": SPIN_UP_YEARS,
             "model.call_xbeach_inter": S0_CALL_XBEACH_INTER, "wrapper.sea_ice_threshold": S0_SEA_ICE_THRESHOLD,
             "thermal.hc_guess": run["hc_guess"] or S0_HC_GUESS, "thermal.dt": dt,
-            "thermal.N_thaw_threshold": S0["N_thaw_threshold"],
+            "thermal.N_thaw_threshold": params["N_thaw_threshold"],
             "data.forcing_data_path": str(ERA5_CSV), "data.storm_data_path": str(STORMS_CSV)}
-    params = {**S0, **run["params"]}
     for k, v in params.items():
         if k == "xb_threshold":
             want["wrapper.xb_threshold"] = v
@@ -392,8 +454,11 @@ def run_settings(run: dict, dt: int, forcing_paths: dict[str, Path]) -> dict:
         else:
             want[f"xbeach.{k}"] = v
     want["xbeach.facSk"] = want["xbeach.facAs"] = params["facua"]
-    for k, v in run["model"].items():
+    for k, v in run_model(run).items():
         want[f"model.{k}"] = v
+    for section in ("wrapper", "thermal"):
+        for k, v in run[section].items():
+            want[f"{section}.{k}"] = v
     if run["forcing"]:
         target = PERTURBATIONS[run["forcing"]]["target"]
         want["data.forcing_data_path" if target == "era5" else "data.storm_data_path"] = str(forcing_paths[run["forcing"]])
@@ -407,13 +472,16 @@ def build_run_folder(run: dict, dt: int, template: Path, drv, forcing_paths: dic
     run_dir = ROOT / folder_name(run)
     shutil.copytree(template, run_dir, dirs_exist_ok=True)
     start, end = PERIODS[run["period"]]
-    extra_model = {"time_start": start, "time_end": end, "spin_up_time": SPIN_UP_YEARS, "call_xbeach_inter": S0_CALL_XBEACH_INTER, **run["model"]}
-    drv.update_config_yaml(run_dir, {**S0, **run["params"]}, extra_model=extra_model)   # facSk = facAs = facua inside
+    extra_model = {"time_start": start, "time_end": end, "spin_up_time": SPIN_UP_YEARS, "call_xbeach_inter": S0_CALL_XBEACH_INTER, **run_model(run)}
+    params = run_params(run)
+    drv.update_config_yaml(run_dir, params, extra_model=extra_model)   # facSk = facAs = facua inside
     cfg = load_config(run_dir / "config.yaml")
     cfg["wrapper"]["sea_ice_threshold"] = S0_SEA_ICE_THRESHOLD
+    cfg["wrapper"].update(run["wrapper"])
     cfg["thermal"]["hc_guess"] = run["hc_guess"] or S0_HC_GUESS
     cfg["thermal"]["dt"] = dt
-    cfg["thermal"]["N_thaw_threshold"] = S0["N_thaw_threshold"]   # the model reads it from the thermal section only
+    cfg["thermal"]["N_thaw_threshold"] = params["N_thaw_threshold"]   # the model reads it from the thermal section only
+    cfg["thermal"].update(run["thermal"])
     if run["forcing"]:
         key = "forcing_data_path" if PERTURBATIONS[run["forcing"]]["target"] == "era5" else "storm_data_path"
         cfg["data"][key] = str(forcing_paths[run["forcing"]])
@@ -428,7 +496,8 @@ def check_run_folder(run: dict, dt: int, template_cfg: dict, forcing_paths: dict
        period (all model timestamps present); each distinct (period, files) combination is checked once (ERA5 loaded
        as the model does it, storms by the model's coverage check; the full initialize_hydro_forcing only for the first run)
     3  the thermal dt passes the wet-node and Fourier guards of thermal_update (computed, see wet_node_limits)
-    Not done: initialize_thermal_module / thermal_update, which write x.grd, bed.dep and ne_layer.txt into the folder (a real model start)."""
+    Not done here: initialize_thermal_module / thermal_update, which write x.grd, bed.dep and ne_layer.txt into the folder (a real model
+    start). For a run that restarts from a saved spin-up, check_spinup_reuse does that in a throwaway copy."""
     import pandas as pd
     from arctic_xbeach.config_loader import load_config
     from arctic_xbeach.model import Simulation
@@ -468,11 +537,83 @@ def check_run_folder(run: dict, dt: int, template_cfg: dict, forcing_paths: dict
     return differs
 
 
+def copy_spinup_states() -> None:
+    """Each source state of SPINUP_STATES once to <ROOT>/spinup/<name>.npz (the source is only read)."""
+    out_dir = ROOT / "spinup"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    for name, src in SPINUP_STATES.items():
+        dst = out_dir / f"{name}.npz"
+        if dst.exists():
+            log(f"f: spin-up state {dst.name} exists, skipped")
+            continue
+        tmp = dst.with_name(dst.name + ".tmp")
+        shutil.copy2(src, tmp)
+        tmp.replace(dst)
+        log(f"f: spin-up state {name} copied from {src} ({dst.stat().st_size / 1e6:.1f} MB)")
+
+
+def check_spinup_reuse(run: dict, spinup_seen: dict) -> None:
+    """Proves that a run with model.spinup_state_in would load its state: the start-up sequence of main.py up to its call of
+    sim.load_spinup_state (forcing, hydro forcing, grid, XBeach and thermal module, spin-up steps) in a throwaway copy of the built
+    folder, <ROOT>/_spinup_check/<folder> (left in place: the start-up writes x.grd, bed.dep, ne_layer.txt and results/). A ValueError
+    of load_spinup_state (thermal config, run context, forcing, storm table, grid or spin-up length differ) propagates and fails the prep.
+    Not repeated for a run whose config is identical to an earlier checked one except for the xbeach / wrapper sections and
+    model.call_xbeach_inter, none of which enters the load check (the thermal config, run context, forcing, storm table and grid)."""
+    import numpy as np
+    from arctic_xbeach.bathymetry import generate_schematized_bathymetry
+    from arctic_xbeach.config_loader import load_config
+    from arctic_xbeach.miscellaneous import resolve_path
+    from arctic_xbeach.model import Simulation
+    run_dir = ROOT / folder_name(run)
+    cfg = load_config(run_dir / "config.yaml")
+    state = Path(cfg["model"]["spinup_state_in"])
+    relevant = {k: v for k, v in flatten(cfg).items() if not k.startswith(("xbeach.", "wrapper.")) and k != "model.call_xbeach_inter"}
+    key = json.dumps(relevant, sort_keys=True, default=str)
+    if key in spinup_seen:
+        log(f"f: {run_dir.name}: spin-up state loads (same thermal config, context, forcing and grid as {spinup_seen[key]})")
+        return
+    check_dir = ROOT / "_spinup_check" / run_dir.name
+    shutil.copytree(run_dir, check_dir, dirs_exist_ok=True)
+    cwd, t0 = os.getcwd(), time.time()
+    try:
+        sim = Simulation(str(check_dir), proj_dir=REPO_DIR)
+        c = sim.config
+        sim.set_temporal_params(c.model.time_start, c.model.time_end, c.model.timestep)
+        sim.load_forcing(resolve_path(c.data.forcing_data_path, sim.proj_dir))
+        sim.initialize_hydro_forcing(resolve_path(c.data.storm_data_path, sim.proj_dir))
+        sim.timesteps_with_xbeach_active()
+        b = c.bathymetry
+        if b.with_schematized_bathymetry:   # as main.py: writes x.grd and bed.dep, which generate_initial_grid then reads
+            xs, zs = generate_schematized_bathymetry(
+                bluff_flat_length=b.bluff_flat_length, bluff_height=b.bluff_height, bluff_slope=b.bluff_slope, beach_width=b.beach_width,
+                beach_slope=b.beach_slope, nearshore_max_depth=b.nearshore_max_depth, nearshore_slope=b.nearshore_slope,
+                offshore_max_depth=b.offshore_max_depth, offshore_slope=b.offshore_slope, continental_flat_width=b.continental_flat_width,
+                with_artificial=b.with_artificial, artificial_max_depth=b.artificial_max_depth, artificial_slope=b.artificial_slope,
+                N=b.N, artificial_flat=b.artificial_flat)
+            np.savetxt("x.grd", xs)
+            np.savetxt("bed.dep", zs)
+        xgr, zgr, _ = sim.generate_initial_grid(nx=c.bathymetry.nx if "nx" in c.bathymetry.keys() else None,
+                                                bathy_path=c.bathymetry.depfile, bathy_grid_path=c.bathymetry.xfile)
+        np.savetxt("x.grd", xgr)
+        np.savetxt("bed.dep", zgr)
+        sim.initialize_xbeach_module()
+        sim.xbeach_times[0] = sim.check_xbeach(0) if c.xbeach.with_xbeach else 0
+        sim.initialize_thermal_module()
+        n_spin = sim.count_spinup_steps(getattr(c.model, "spin_up_time", 0) * 365.25 * 24 * 3600)
+        start_id = sim.load_spinup_state(state, n_spin)
+    finally:
+        os.chdir(cwd)
+    spinup_seen[key] = run_dir.name
+    log(f"f: {run_dir.name}: spin-up state {state.name} loads, main loop would continue at timestep {start_id} of {len(sim.T)} "
+        f"({sim.timestamps[start_id]}) ({time.time() - t0:.0f} s)")
+
+
 def step_f_runs(template: Path, drv, cfl: float, dt_info: dict) -> None:
     from arctic_xbeach.config_loader import load_config
     forcing_paths = build_forcing()
+    copy_spinup_states()
     template_cfg = load_config(template / "config.yaml")
-    rows, diffs, forcing_seen = [], [], {}
+    rows, diffs, forcing_seen, spinup_seen = [], [], {}, {}
     for run in RUNS:
         hc = run["hc_guess"] or S0_HC_GUESS
         dt = dt_info["hc1210_dt"] if hc == HC_LONG_DT_RUN else THERMAL_DT
@@ -483,6 +624,8 @@ def step_f_runs(template: Path, drv, cfl: float, dt_info: dict) -> None:
             continue
         build_run_folder(run, dt, template, drv, forcing_paths)
         differs = check_run_folder(run, dt, template_cfg, forcing_paths, dt_info["limits"], forcing_seen)
+        if run["spinup"]:
+            check_spinup_reuse(run, spinup_seen)
         diffs.append(f"{run_dir.name}: {', '.join(differs)}")
         log(f"f: {run_dir.name} built and checked ({run['period']}, {run['change']}, thermal dt {dt} s)")
     for run in RUNS:
@@ -491,6 +634,8 @@ def step_f_runs(template: Path, drv, cfl: float, dt_info: dict) -> None:
                          time_end=PERIODS[run["period"]][1], changes=run["change"],
                          forcing_files=str(forcing_paths[run["forcing"]]) if run["forcing"] else "base (era5.csv, storms.csv)",
                          thermal_dt=dt_info["hc1210_dt"] if hc == HC_LONG_DT_RUN else THERMAL_DT, hc_guess=hc, cfl_xbeach=cfl))
+        if DESIGN_MODULE:
+            rows[-1]["spinup"] = f"{run['spinup']}.npz" if run["spinup"] else "own"
     import csv
     with open(ROOT / "design.csv", "w", newline="", encoding="utf-8") as f:
         w = csv.DictWriter(f, fieldnames=list(rows[0]))
