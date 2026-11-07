@@ -15,6 +15,10 @@
 # so `sbatch --dependency=afterok:<jobid>` holds follow-up jobs. See hpc/h7/README_H7.md.
 # Submit from the folder that should hold the job log:   sbatch /u/nederhof/git/arctic-xbeach/hpc/h7/coupled_calibration.sbatch
 # Override any setting at submission:   sbatch --export=ALL,AXB_N_TRIALS=2,AXB_N_PARALLEL=2 .../coupled_calibration.sbatch
+# Optional driver settings (calibration/README.md), also set with --export:  AXB_TIMEOUT_H (stop starting trials after this many hours, below --time),
+# AXB_SEED_FROM_RUN_ROOT + AXB_SEED_FROM_STUDY (+ AXB_SEED_FROM_STORAGE) to start from an earlier study, AXB_PARAM_RANGES (JSON of narrowed ranges).
+# A JSON value contains commas, which --export cannot carry: export it in the shell before sbatch (--export=ALL, the default, passes it on):
+#   export AXB_PARAM_RANGES='{"xb_threshold": [1.75, 2.25], "dryslp": [0.3, 1.0]}'; sbatch .../coupled_calibration.sbatch
 # Submitting again with the same AXB_RUN_ROOT continues the same study (the spin-up state is reused).
 set -euo pipefail
 

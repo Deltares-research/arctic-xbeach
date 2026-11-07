@@ -79,6 +79,11 @@ STORAGE = os.environ.get("AXB_STORAGE", "sqlite")  # "sqlite" (RUN_ROOT_DIR/optu
 SCRATCH = Path(os.environ["AXB_SCRATCH"]) if os.environ.get("AXB_SCRATCH") else None  # trials run here and are copied back to RUN_ROOT_DIR; None = run in RUN_ROOT_DIR
 KEEP_XB_FILES = os.environ.get("AXB_KEEP_XB_FILES", "1").lower() not in ("0", "false", "no")  # False = delete results/xb_files of a trial after scoring (about 26,000 files per trial; no effect with SCRATCH: never copied back)
 CONSTANT_LIAR = os.environ.get("AXB_CONSTANT_LIAR", "0").lower() in ("1", "true", "yes")  # with ~40 parallel trials this keeps TPE from proposing near-duplicates of the trials still running
+PARAM_RANGES_JSON = os.environ.get("AXB_PARAM_RANGES") or None  # JSON {"name": [low, high], ...} replacing those entries of PARAM_RANGES, e.g. a narrowed range for a follow-up study; None = the published ranges
+TIMEOUT_H = float(os.environ["AXB_TIMEOUT_H"]) if os.environ.get("AXB_TIMEOUT_H") else None  # [h] no new trial is started after this; running trials finish. Used to end a job before its SLURM --time so that no running trial is lost. None = no limit
+SEED_FROM_RUN_ROOT = Path(os.environ["AXB_SEED_FROM_RUN_ROOT"]) if os.environ.get("AXB_SEED_FROM_RUN_ROOT") else None  # RUN_ROOT of an earlier study whose usable trials start this one (read only); needs SEED_FROM_STUDY. None = no seeding
+SEED_FROM_STUDY = os.environ.get("AXB_SEED_FROM_STUDY") or None  # name of that study
+SEED_FROM_STORAGE = os.environ.get("AXB_SEED_FROM_STORAGE") or STORAGE  # storage kind of that study ("sqlite" or "journal")
 MAKE_FIGURE = True
 REMOVE_RESULTS_NC = True
 # === END CONFIGURATION ===
@@ -117,6 +122,39 @@ warnings.filterwarnings("ignore")
 # post-processing of one trial at a time holds this lock (two reads at once gave "NetCDF: HDF error" in the thermal study).
 POSTPROC_LOCK = threading.Lock()
 
+def is_int_range(bounds) -> bool:
+    """Both bounds int: the parameter is sampled with suggest_int, else with suggest_float."""
+    return isinstance(bounds[0], int) and isinstance(bounds[1], int)
+
+
+def override_param_ranges(ranges: dict, text: str | None) -> dict:
+    """Copy of ranges with the entries named in the JSON text (AXB_PARAM_RANGES) replaced. Exits on a bad key or value.
+    A parameter keeps its sampling type: float parameters get float bounds, an int parameter needs int bounds."""
+    out = {k: list(v) for k, v in ranges.items()}
+    if not text:
+        return out
+    try:
+        new = json.loads(text)
+    except json.JSONDecodeError as e:
+        raise SystemExit(f"AXB_PARAM_RANGES is not valid JSON: {e}")
+    if not isinstance(new, dict):
+        raise SystemExit(f"AXB_PARAM_RANGES must be a JSON object {{name: [low, high]}}, got {text!r}")
+    for k, v in new.items():
+        if k not in ranges:
+            raise SystemExit(f"AXB_PARAM_RANGES: unknown parameter {k!r}; known parameters: {', '.join(ranges)}")
+        if not (isinstance(v, list) and len(v) == 2 and all(isinstance(x, (int, float)) and not isinstance(x, bool) and np.isfinite(x) for x in v)):
+            raise SystemExit(f"AXB_PARAM_RANGES: {k!r} must be two finite numbers [low, high], got {v!r}")
+        if v[0] > v[1]:
+            raise SystemExit(f"AXB_PARAM_RANGES: {k!r} has low > high: {v!r}")
+        if is_int_range(ranges[k]):
+            if not all(isinstance(x, int) for x in v):
+                raise SystemExit(f"AXB_PARAM_RANGES: {k!r} is an integer parameter, its bounds must be integers, got {v!r}")
+            out[k] = list(v)
+        else:
+            out[k] = [float(v[0]), float(v[1])]  # [2, 3] for xb_threshold must stay a float range (suggest_float, not suggest_int)
+    return out
+
+
 # Parameter ranges [low, high]; low == high means fixed. facSk and facAs are set equal to facua when the config is written.
 PARAM_RANGES = {
     "facua": [0.00, 0.40],
@@ -127,6 +165,7 @@ PARAM_RANGES = {
     "lsgrad": [0.0, 0.0],
     "N_thaw_threshold": [3, 3],
 }
+PARAM_RANGES = override_param_ranges(PARAM_RANGES, PARAM_RANGES_JSON)  # AXB_PARAM_RANGES
 
 CHILD_SCRIPT = """\
 from pathlib import Path
@@ -438,10 +477,58 @@ SPINUP_STATE = None  # set in main()
 TEMPLATE = None
 
 
+def param_distribution(bounds):
+    """The distribution that objective() gets from suggest_int / suggest_float for these bounds (same rule: is_int_range)."""
+    if is_int_range(bounds):
+        return optuna.distributions.IntDistribution(int(bounds[0]), int(bounds[1]))
+    return optuna.distributions.FloatDistribution(float(bounds[0]), float(bounds[1]))
+
+
+def log_line(text: str) -> None:
+    """Print, and append to calibration_prints.txt once RUN_ROOT_DIR exists."""
+    print(text)
+    if RUN_ROOT_DIR.exists():
+        hpc.append_log(RUN_ROOT_DIR / "calibration_prints.txt", text + "\n")
+
+
+def seed_study(study: optuna.Study, src_root: Path, src_name: str, src_storage: str) -> int:
+    """Copy the usable trials of an earlier study into the new, empty study; returns how many. The source is only read.
+
+    Usable: COMPLETE, finite value, a value for every key of PARAM_RANGES, each inside the current [low, high] (inclusive; a fixed
+    parameter must equal its bound). Only the PARAM_RANGES parameters are copied, with the distributions objective() creates, so TPE
+    treats seeded and new trials alike. A study that already has trials (a rerun) is left alone."""
+    if study.get_trials(deepcopy=False):
+        log_line(f"Study already has trials: not seeded from {src_name} ({src_root})")
+        return 0
+    src_file = src_root / ("optuna_journal.log" if src_storage == "journal" else "optuna_study.db")
+    if not src_file.exists():  # opening a journal that is not there would create an empty one in the source folder
+        raise SystemExit(f"Seeding: {src_file} not found (AXB_SEED_FROM_RUN_ROOT / AXB_SEED_FROM_STORAGE)")
+    try:
+        source = optuna.load_study(study_name=src_name, storage=hpc.make_storage(src_storage, src_root))
+    except KeyError:
+        raise SystemExit(f"Seeding: no study named {src_name!r} in {src_file}")
+    if source.direction != study.direction:
+        raise SystemExit(f"Seeding: {src_name} optimises {source.direction.name}, this study {study.direction.name}")
+    distributions = {k: param_distribution(v) for k, v in PARAM_RANGES.items()}
+    src_trials = source.get_trials(deepcopy=False)
+    n = 0
+    for t in src_trials:
+        if t.state != optuna.trial.TrialState.COMPLETE or t.value is None or not np.isfinite(t.value):
+            continue
+        if not all(k in t.params and lo <= t.params[k] <= hi for k, (lo, hi) in PARAM_RANGES.items()):
+            continue
+        study.add_trial(optuna.trial.create_trial(
+            params={k: t.params[k] for k in PARAM_RANGES}, distributions=distributions, value=float(t.value),
+            user_attrs={**t.user_attrs, "seeded_from": f"{src_name}#{t.number}"}))
+        n += 1
+    log_line(f"seeded {n} of {len(src_trials)} trials from {src_name} ({src_root})")
+    return n
+
+
 def objective(trial: optuna.Trial) -> float:
     params = {}
     for k, v in PARAM_RANGES.items():
-        if isinstance(v[0], int) and isinstance(v[1], int):
+        if is_int_range(v):
             params[k] = trial.suggest_int(k, int(v[0]), int(v[1]))
         else:
             params[k] = trial.suggest_float(k, float(v[0]), float(v[1]))
@@ -490,6 +577,7 @@ def main():
     RUN_ROOT_DIR.mkdir(parents=True, exist_ok=True)
     print_log = RUN_ROOT_DIR / "calibration_prints.txt"
     hpc.append_log(print_log, f"Calibration run started: {datetime.datetime.now()}\n")
+    log_line(f"Parameter ranges: {PARAM_RANGES}")
 
     TEMPLATE = prepare_template()
     if USE_SPINUP_STATE:
@@ -500,14 +588,17 @@ def main():
         return
 
     study =hpc.open_study(STUDY_NAME, RUN_ROOT_DIR, STORAGE, optuna.samplers.TPESampler(seed=SEED, constant_liar=CONSTANT_LIAR))  # a rerun continues the study
+    if SEED_FROM_RUN_ROOT is not None and SEED_FROM_STUDY is not None:
+        seed_study(study, SEED_FROM_RUN_ROOT, SEED_FROM_STUDY, SEED_FROM_STORAGE)  # before n_todo: seeded trials count toward N_TRIALS
     if START_PARAMS is not None and len(study.trials) == 0:
-        study.enqueue_trial(START_PARAMS)  # first trial of a new study
+        study.enqueue_trial(START_PARAMS)  # first trial of a new study (not after seeding)
 
     n_complete = len(study.get_trials(deepcopy=False, states=(optuna.trial.TrialState.COMPLETE,)))
     n_todo = max(N_TRIALS - n_complete, 0)
     print(f"Study has {n_complete} completed trials; running {n_todo} more to reach {N_TRIALS}")
     try:
-        study.optimize(objective, n_trials=n_todo, n_jobs=N_PARALLEL, callbacks=[lambda study, trial: gc.collect()])
+        study.optimize(objective, n_trials=n_todo, n_jobs=N_PARALLEL, timeout=TIMEOUT_H * 3600 if TIMEOUT_H is not None else None,
+                       callbacks=[lambda study, trial: gc.collect()])
     except KeyboardInterrupt:
         print("Optimization interrupted by user.")
         hpc.append_log(print_log, "Optimization interrupted by user.\n")
