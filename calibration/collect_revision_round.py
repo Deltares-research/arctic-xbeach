@@ -1,6 +1,6 @@
-"""Collector of the revision round: status, progress, ETA and skill of the 16 coupled runs, rewritten every COLLECT_INTERVAL_MIN.
+"""Collector of the revision round: status, progress, ETA and skill of the coupled runs in design.csv (16 or 27), rewritten every COLLECT_INTERVAL_MIN.
 
-Writes <ROOT>\\summary\\round_summary.csv, round_summary.md and quick-look PNGs, then waits; exits after a final write when all 16 runs
+Writes <ROOT>\\summary\\round_summary.csv, round_summary.md and quick-look PNGs, then waits; exits after a final write when all runs
 are done or failed (or after MAX_RUNTIME_H). It only reads: it never stops, restarts or submits a run. A finished run without a
 score.json is scored with score_run() of score_coupled_run.py (once per collector process).
 
@@ -221,7 +221,7 @@ def plot_timeseries(runs: list[dict], scores: dict, out_dir: Path) -> list[str]:
                 ax.plot(pd.to_datetime(obs["time"]), obs["observed_m"], "o", color="tab:red", ms=5, label="observed")
             ax.set_ylabel(f"{name} position [m]")
             ax.grid(alpha=0.3)
-        axes[0].legend(fontsize=7, ncol=2)
+        axes[0].legend(fontsize=7, ncol=2 if len(members) <= 12 else 3)
         axes[0].set_title(f"{period}: modelled vs observed (model normalised as in the scorer)")
         fig.tight_layout()
         fig.savefig(out_dir / f"timeseries_{period}.png", dpi=150)
@@ -230,14 +230,15 @@ def plot_timeseries(runs: list[dict], scores: dict, out_dir: Path) -> list[str]:
 
 
 def plot_p2_sensitivity(runs: list[dict], rows: dict, out_dir: Path) -> list[str]:
-    """Bar chart: modelled bluff-edge (and shoreline) retreat of the P2 runs relative to the centre run rr01."""
+    """Bar chart: modelled bluff-edge (and shoreline) retreat of the P2 runs relative to the P2 centre run (the P2 run whose change is 'none ...')."""
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
-    base = rows.get("rr01")
+    base_id = next((r["id"] for r in runs if r["period"] == "P2" and r["change"].startswith("none")), None)
+    base = rows.get(base_id)
     if not base or base["model_retreat_bluff_m"] is None:
-        return ["P2 sensitivity bars skipped: rr01 (P2 centre) is not scored yet"]
-    members = [r for r in runs if r["period"] == "P2" and r["id"] != "rr01" and rows[r["id"]]["model_retreat_bluff_m"] is not None]
+        return [f"P2 sensitivity bars skipped: {base_id} (P2 centre) is not scored yet"]
+    members = [r for r in runs if r["period"] == "P2" and r["id"] != base_id and rows[r["id"]]["model_retreat_bluff_m"] is not None]
     if not members:
         return ["P2 sensitivity bars skipped: no scored P2 sensitivity run yet"]
     fig, axes = plt.subplots(1, 2, figsize=(10, 0.5 * len(members) + 2), sharey=True)
@@ -245,10 +246,10 @@ def plot_p2_sensitivity(runs: list[dict], rows: dict, out_dir: Path) -> list[str
         d = [rows[r["id"]][key] - base[key] if rows[r["id"]][key] is not None and base[key] is not None else float("nan") for r in members]
         ax.barh(range(len(members)), d, color=["tab:blue" if v >= 0 else "tab:orange" for v in d])
         ax.axvline(0, color="k", lw=0.8)
-        ax.set_xlabel(f"{name} retreat minus rr01 [m]  (rr01: {base[key]:.1f} m)" if base[key] is not None else f"{name} retreat difference [m]")
+        ax.set_xlabel(f"{name} retreat minus {base_id} [m]  ({base_id}: {base[key]:.1f} m)" if base[key] is not None else f"{name} retreat difference [m]")
         ax.grid(axis="x", alpha=0.3)
     axes[0].set_yticks(range(len(members)))
-    axes[0].set_yticklabels([f"{r['id']} {r['change']}" for r in members], fontsize=8)
+    axes[0].set_yticklabels([f"{r['id']} {r['change'].split(';')[0]}" for r in members], fontsize=8)
     axes[0].invert_yaxis()
     fig.suptitle("P2 sensitivity runs: modelled retreat relative to the centre run")
     fig.tight_layout()
