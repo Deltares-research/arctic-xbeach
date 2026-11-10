@@ -7,7 +7,7 @@ does not say which solver ran; run_header() reports each option with its value.
 import subprocess
 from pathlib import Path
 
-__version__ = "1.1.0.dev0"
+__version__ = "1.1.0"
 
 # (config section, option, legacy value = default, v1.1 value, what the option does)
 V11_OPTIONS = (
