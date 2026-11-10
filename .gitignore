@@ -211,3 +211,7 @@ examples/case_studies/barter_island/database/storms.csv
 
 __pycache__/
 .pytest_cache/
+
+# Arctic-XBeach run output and editor backups
+examples/**/results/
+*.bak

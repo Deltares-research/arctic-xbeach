@@ -26,7 +26,7 @@ waits for the production job, or the other way round.
 
 ```bash
 mkdir -p /u/nederhof/git /u/nederhof/arctic-xbeach-runs/logs
-git clone -b linux-deployment https://github.com/deltares-research/arctic-xbeach.git /u/nederhof/git/arctic-xbeach
+git clone -b main https://github.com/deltares-research/arctic-xbeach.git /u/nederhof/git/arctic-xbeach
 bash -l /u/nederhof/git/arctic-xbeach/hpc/h7/setup_env.sh
 ```
 
