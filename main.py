@@ -257,6 +257,10 @@ def _main(sim, print_to_screen=True):
         spinup_state_out = None
     logger.info("Starting Arctic-XBeach")
 
+    # Optional fail-fast: stop (nonzero exit) once more XBeach calls have failed than xbeach.max_failed_calls. Missing/None: log and carry on.
+    max_failed_calls = sim.config.xbeach.get('max_failed_calls')
+    n_failed_calls = 0
+
     # =========================================================================
     # MAIN TIME LOOP
     # =========================================================================
@@ -370,6 +374,16 @@ def _main(sim, print_to_screen=True):
                 grid_update_wall_s=round(grid_update_wall, 4), success=int(bool(run_successful)),
             ))
 
+            if not run_successful:
+                n_failed_calls += 1
+                if max_failed_calls is not None and n_failed_calls > int(max_failed_calls):
+                    logger.error(f"{n_failed_calls} failed XBeach calls exceed xbeach.max_failed_calls = {max_failed_calls}; "
+                                 f"stopping at {sim.timestamps[timestep_id]} (see {Path(sim.result_dir) / 'xbeach_calls.csv'})")
+                    diag.close()  # xbeach_calls.csv is flushed per call; this closes it
+                    if sim.nc_writer is not None:
+                        sim.nc_writer.close()
+                    raise SystemExit(3)  # not an Exception: main() lets it pass and only releases the run lock
+
         # ---------------------------------------------------------------------
         # Thermal Model Updates
         # ---------------------------------------------------------------------
@@ -388,7 +402,8 @@ def _main(sim, print_to_screen=True):
         # ---------------------------------------------------------------------
         # Output Generation
         # ---------------------------------------------------------------------
-        if timestep_id in sim.temp_output_ids:
+        # thermal records every output_res steps; XBeach records at every successful call, so a coarse output_res keeps them all
+        if timestep_id in sim.temp_output_ids or sim.xbeach_success[timestep_id]:
             sim.write_output(timestep_id, t_start)
             logger.debug("Successfully generated output")
 

@@ -58,6 +58,8 @@ XBeach must be installed separately. Download from the official repository: http
    ```yaml
    xbeach:
      version: "C:/software/XBeach/xbeach.exe"  # Use forward slashes
+     # launcher: "/path/to/mpirun -np 2 --oversubscribe --bind-to none"  # optional, for an MPI-only build: command prefix put in front of the executable
+     # max_failed_calls: 0  # optional: stop the run (exit code 3) once more XBeach calls than this have failed; default: log and carry on
    ```
 
 ### Step 4: Download case study data

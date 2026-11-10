@@ -1,6 +1,7 @@
-"""XBeach records in results.nc: one per successful call at an output step, at consecutive indices.
+"""XBeach records in results.nc: one per successful call, at consecutive indices, whatever the thermal output steps are.
 
-write_output is driven directly on a thermal-only sim (as in tests/test_diagnostics.py) with fake XBeach output files.
+write_output is driven directly on a thermal-only sim (as in tests/test_diagnostics.py) with fake XBeach output files, at the
+steps main.py calls it for: the thermal output steps (temp_output_ids) and every step with a successful call.
 """
 import os
 import time
@@ -26,7 +27,7 @@ def fake_xb_file(sim, step: int):
 
 
 def run_outputs(tmp_path, calls: dict, output_steps):
-    """calls: {step: (xbeach_times value, success)}. Returns the results.nc contents after writing output_steps."""
+    """calls: {step: (xbeach_times value, success)}; output_steps are the thermal output steps. Returns the results.nc contents."""
     cwd = os.getcwd()
     try:
         sim = make_sim(build_run(tmp_path / "run"), with_diag=False)
@@ -36,7 +37,8 @@ def run_outputs(tmp_path, calls: dict, output_steps):
             sim.xbeach_success[step] = success
             if success:
                 fake_xb_file(sim, step)
-        for step in output_steps:
+        sim.temp_output_ids = np.array(output_steps)
+        for step in sorted(set(output_steps) | {s for s, (_, ok) in calls.items() if ok}):  # as main.py
             sim.write_output(step, time.time())
         sim.nc_writer.close()
         with xr.open_dataset(os.path.join(sim.result_dir, "results.nc"), decode_times=False) as ds:
@@ -61,12 +63,14 @@ def test_call_on_storm_and_inter_step_is_written(tmp_path):
     assert np.all(ds.zb_xbeach.values[0] == 3.0)
 
 
-def test_records_are_consecutive_when_output_is_sparser_than_calls(tmp_path):
+def test_calls_between_output_steps_are_written(tmp_path):
     calls = {1: (1.0, True), 3: (1.0, True), 6: (1.0, True)}
     ds = run_outputs(tmp_path, calls, output_steps=[0, 3, 6])
-    assert ds.sizes["time_xbeach"] == 2  # the call at step 1 is not an output step
-    assert np.array_equal(ds.time_xbeach.values, ds.time.values[1:])
-    assert np.array_equal(ds.zb_xbeach.values[:, 0], [3.0, 6.0])  # no empty or fill records in between
+    assert ds.sizes["time"] == 3  # no thermal record for the call at step 1
+    assert ds.sizes["time_xbeach"] == 3  # but an XBeach record
+    assert np.array_equal(ds.time_xbeach.values[1:], ds.time.values[1:])
+    assert ds.time_xbeach.values[0] < ds.time.values[1]
+    assert np.array_equal(ds.zb_xbeach.values[:, 0], [1.0, 3.0, 6.0])  # no empty or fill records in between
 
 
 def test_failed_call_has_no_record(tmp_path):

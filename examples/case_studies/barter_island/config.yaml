@@ -73,6 +73,8 @@ xbeach:
   # general settings
   with_xbeach : True  # include the xbeach module in the model, default true
   version     : d:\software\XBeach\releases\halloween\XBeach_1.24.6057_Halloween_win64_netcdf\xbeach.exe  # path to the XBeach executable (published runs: XBeach 1.24.6057 Halloween, win64 netcdf; on Linux: /path/to/xbeach)
+  # launcher : '/path/to/mpirun -np 2 --oversubscribe --bind-to none'  # optional command prefix for an MPI-only XBeach build (xbeach.version is appended); empty/missing = start the executable directly
+  # max_failed_calls : 0  # optional: stop the run (exit code 3) once more XBeach calls than this have failed; missing = log the failure and carry on
 
   # physical processes:
   with_wind     : False  # include wind in the xbeach model

@@ -1,6 +1,6 @@
 # Arctic-XBeach calibration on the Deltares H7 cluster
 
-The two Optuna drivers in `calibration/` run on one 44-core node of the `44vcpu` partition, about 42 trials at a time. The same scripts
+The two Optuna drivers in `calibration/` run on one 44-core node of the `44vcpu` partition, about 42 trials at a time (coupled: 43 or 21, see "Open checks for the first job", item 2). The same scripts
 run on the Windows desktop; on H7 they are configured with `AXB_*` environment variables that the sbatch scripts set (list and meaning:
 `calibration/README.md`, section "Running on Linux / HPC").
 
@@ -10,10 +10,10 @@ run on the Windows desktop; on H7 they are configured with `AXB_*` environment v
 |---|---|
 | `setup_env.sh` | (run with `bash -l`) creates (or updates) the conda environment `/u/nederhof/envs/arctic-xbeach` from `environment.yml`, installs the repo and runs the tests |
 | `thermal_calibration.sbatch` | step 1, thermal-only calibration, `run_thermal_calibration.py`, 3 days |
-| `coupled_calibration.sbatch` | step 2, coupled calibration, `auto_calibrate_coupled_model.py`, 14 days; loads the XBeach module and passes the executable |
+| `coupled_calibration.sbatch` | step 2, coupled calibration, `auto_calibrate_coupled_model.py`, 14 days; loads the XBeach trunk module, starts XBeach through `mpirun`, runs an XBeach preflight and passes the executable |
 
 Both sbatch files request account `amo`, QOS `normal`, partition `44vcpu`, one node and 44 cores (which takes the whole 44vcpu node, so there
-is no `--exclusive`). They use the study in `AXB_RUN_ROOT` with journal storage, TPE `constant_liar`, `AXB_N_PARALLEL = cpus - 2`, and the
+is no `--exclusive`). They use the study in `AXB_RUN_ROOT` with journal storage, TPE `constant_liar`, `AXB_N_PARALLEL = cpus - 2` (coupled: `cpus - 1`), and the
 job's `$TMPDIR` as scratch. They write the host, the `$TMPDIR` size and mount, memory, package versions, the git commit and the `AXB_*`
 settings to the top of the job log, then check that file locks work in `AXB_RUN_ROOT` ("File lock probe OK", otherwise the job stops). When
 the job ends, for any reason, the log lists what is left in `AXB_SCRATCH`.
@@ -99,7 +99,8 @@ The coupled run starts many XBeach processes at once, so test it with several tr
 window. `AXB_TIME_END` (`DD-MM-YYYY`) replaces `model.time_end` of the template; the spin-up is still the full 10 years, so the window must
 end after it and should contain open water, or no XBeach call is made (`xbeach_calls.csv` is then missing and the trial gets `inf`). The
 published base starts on 01-01-2002 with a spin-up of 10 years, so `01-10-2012` covers the 2012 open-water season; check `time_start` and
-`spin_up_time` in `coupled_base/config.yaml`. The job needs `AXB_N_PARALLEL + 2` cores.
+`spin_up_time` in `coupled_base/config.yaml`. The job needs `AXB_N_PARALLEL + 1` cores. With `AXB_TIME_END` set a trial is scored only up to that date and can be `inf` without having failed, so the job
+exits nonzero only if a trial failed (child exit code, failed XBeach calls beyond the limit); without it the job exits nonzero when no trial has a finite value.
 
 ```bash
 cd /u/nederhof/arctic-xbeach-runs/logs
@@ -110,14 +111,18 @@ sbatch -J axb_coupled_smoke -p 16vcpu --cpus-per-task=10 --time=06:00:00 \
 
 Check:
 
-* The job log shows "File lock probe OK" and `ldd` without `not found`; the first XBeach call in a `run.log` does not hang or fail.
+* The job log shows "File lock probe OK", `ldd` without `not found`, the launcher, the `mpirun` version and "XBeach preflight OK in N s"; the first
+  XBeach call in a `run.log` does not hang or fail.
 * Failed XBeach calls: `grep -c "Failed to run XBeach" /u/nederhof/arctic-xbeach-runs/coupled_smoke/optuna_trial_*/run.log` is 0 in every
   file. The driver also counts them (trial attribute `n_failed_xbeach_calls`) and gives `inf` to a trial above `AXB_MAX_FAILED_XBEACH_CALLS` (0).
 * Core placement, while the trials run: `srun --jobid=<jobid> --overlap bash -c 'ps -eo psr,comm | grep xbeach'`. The first column is the
-  core of each XBeach process; they should be spread over several cores, not all on one.
+  core of each XBeach process (two per call); they should be spread over the cores, not piled on a few.
 * `coupled_smoke/spinup_state.npz` exists. It can be copied into the production `AXB_RUN_ROOT` (`mkdir -p coupled_calibration; cp
   coupled_smoke/spinup_state.npz coupled_calibration/`) to save the spin-up there. A trial refuses a state that was made with a different
   thermal config (thermal hash), so a wrong copy cannot be used silently.
+* Spin-up on a small node: submit the same sbatch with `AXB_N_TRIALS=0` (e.g. `-p 4vcpu --cpus-per-task=4`) and the same
+  `AXB_RUN_ROOT` and thermal settings as the study. It writes `spinup_state.npz` and exits 0 without opening a study, so the
+  study job can wait for it with `--dependency=afterok:<jobid>` and start its trials at once.
 
 ## Full run
 
@@ -126,6 +131,9 @@ cd /u/nederhof/arctic-xbeach-runs/logs
 sbatch /u/nederhof/git/arctic-xbeach/hpc/h7/thermal_calibration.sbatch      # 1000 trials, 42 at a time
 sbatch /u/nederhof/git/arctic-xbeach/hpc/h7/coupled_calibration.sbatch      # 200 trials, after the thermal study and its best config in thermal_best/
 ```
+
+The coupled job exits nonzero when the XBeach preflight fails or no trial gets a finite score, so a follow-up job submitted with
+`sbatch --dependency=afterok:<jobid> ...` does not start after a study that scored nothing.
 
 The studies are in `thermal_calibration/` and `coupled_calibration/`. Settings such as `AXB_N_TRIALS` are changed with
 `sbatch --export=ALL,AXB_N_TRIALS=100 ...`. Do not start two jobs on the same `AXB_RUN_ROOT`: only one driver per study is supported (`--dependency=singleton` makes a second job of the same name wait).
@@ -156,14 +164,25 @@ The trials that were running are lost, because their scratch folders are gone wi
 ## Open checks for the first job
 
 1. **`$TMPDIR` size and type.** TmpDisk is 0 on H7 and `$TMPDIR` is `/var/lib/containers/storage-rootless/tmp/<jobid>`. The job log shows
-   `df -h` and `findmnt` of it. A coupled trial needs 0.4 to 0.7 GB, 42 trials about 25 GB. If it is small or on NFS, submit with
+   `df -h` and `findmnt` of it. A coupled trial needs 0.4 to 0.7 GB, 43 trials about 25 GB. If it is small or on NFS, submit with
    `--export=ALL,AXB_SCRATCH=` (no scratch): the trials then run on `/u` and `results/xb_files` is deleted after scoring.
-2. **XBeach as one process under SLURM.** The module binary is MPI-linked; starting it without `mpirun` is untested, and OpenMPI may pick up
-   the SLURM environment in each of the 42 launches, and every such singleton binds itself to core 0 unless told otherwise;
-   `coupled_calibration.sbatch` therefore sets `OMPI_MCA_hwloc_base_binding_policy=none`. Test with the coupled smoke job and look at the first
-   XBeach call in `run.log`, and at the core of each XBeach process: `srun --jobid=<jobid> --overlap bash -c 'ps -eo psr,comm | grep xbeach'`
-   (first column). If it hangs or fails, the launcher has to remove the `SLURM_*` and `PMI*` variables from XBeach's environment. If the
-   processes pile up on few cores, call XBeach as `mpirun -np 1 --bind-to none` instead of directly.
+2. **XBeach under SLURM (MPI-only, trunk module, `mpirun -np 2`).** The XBeach modules on H7 are MPI-only builds: started as one process they halt
+   ("Number of MPI processes must be 2 or greater"). The Halloween module (1.24.6057, the release of the desktop runs) also crashes writing hotstart files
+   under gfortran (`ncoutput.F90:2122`). `coupled_calibration.sbatch` therefore loads `xbeach/xbeach-trunk_gcc_12.2.0_openmpi_4.1.5_HEAD` (built 2026-10-14)
+   and `main.py` starts every call through the launcher `xbeach.launcher`, set from `AXB_XBEACH_LAUNCHER`:
+   `/opt/apps/openmpi/4.1.5_gcc12.2.0/bin/mpirun -np 2 --oversubscribe --bind-to none` (mpirun is not on `PATH` after the module load; `AXB_MPIRUN` and
+   `AXB_XBEACH_NP` change the pieces, `AXB_XBEACH_LAUNCHER=` empty starts `xbeach` directly). `--oversubscribe` is needed because the job has `--ntasks=1`, so
+   OpenMPI under SLURM sees one slot; `--bind-to none` and `OMPI_MCA_hwloc_base_binding_policy=none` keep the parallel `mpirun` processes from binding to the same cores.
+   Two choices of `AXB_N_PARALLEL` are being tested: 43 (the default, `cpus - 1`; the second MPI rank of each call is expected to be mostly idle) and 21
+   (`(cpus - 1) / 2`, one core per rank). Compare the wall time per trial and the core load (`ps -eo psr,comm | grep xbeach`, first column).
+   **Preflight:** before the driver starts, the job copies the case in `AXB_XBEACH_PREFLIGHT_DIR` (default `$DATA/xbeach_preflight`, i.e.
+   `/u/nederhof/arctic-xbeach-runs/xbeach_preflight`) to `$TMPDIR` and runs it with the launcher, with a limit of 900 s. It passes if XBeach exits 0 and writes
+   `xboutput.nc` (and a `hotstart_*.dat` if `params.txt` has `writehotstart = 1`); otherwise the log tail and `XBerror.txt` are printed and the job exits 1.
+   Copy a small XBeach case that has run before to that folder (a case with `writehotstart = 1` also tests the hotstart crash), or submit with
+   `AXB_XBEACH_PREFLIGHT_DIR=` (empty) to skip it. **Fail-fast:** every trial config gets `xbeach.max_failed_calls = AXB_MAX_FAILED_XBEACH_CALLS` (0), so a
+   trial stops at the first failed XBeach call (exit code 3, scored `inf`) instead of running on for hours.
+   **Not yet checked:** trunk is not the Halloween release of the desktop runs, so results may differ slightly; an equivalence check (the same case on
+   the desktop and on H7) is pending.
 3. **`module` and `conda` in the batch shell.** The sbatch scripts and `setup_env.sh` use `#!/bin/bash -l` (start `setup_env.sh` with `bash -l`) so that the module command is defined.
 4. **The XBeach module.** `ldd` in the job log must show no `not found`.
 5. **Journal on `/u`.** The file `optuna_journal.log` should grow during the run; lock errors in the job log would mean that the NFS lock
