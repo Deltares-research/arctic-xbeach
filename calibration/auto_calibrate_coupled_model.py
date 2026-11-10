@@ -16,24 +16,37 @@ Workflow
   3. trials: copy of the template + sampled parameters + spinup_state_in, run, score, delete results.nc.
 
 Run:  python calibration/auto_calibrate_coupled_model.py        (see calibration/README.md)
+
+On a Linux cluster the same script is configured through AXB_* environment variables (hpc/h7/coupled_calibration.sbatch). With
+STORAGE = "journal" the study is an append-only file that is safe on NFS; with SCRATCH set each trial runs on that (local) disk and
+is copied back to RUN_ROOT_DIR without its results/xb_files. The template and the spin-up state stay in RUN_ROOT_DIR. Only ONE driver
+process per study is supported (the sbatch file uses --dependency=singleton): with journal storage, trials still RUNNING at start
+are taken to be left by a killed earlier job and are marked FAIL.
+
+A trial with more failed XBeach calls than MAX_FAILED_XBEACH_CALLS (counted in results/xbeach_calls.csv) is not scored (inf):
+main.py logs a failed call and carries on, which would otherwise be scored as a run without that morphological change.
 """
 # === CONFIGURATION ===
+# The AXB_* environment variables override the defaults below (used by hpc/h7/*.sbatch); without them nothing changes.
+import os
 from pathlib import Path
 
 REPO_DIR = Path(__file__).resolve().parents[1]  # arctic-xbeach checkout that is imported by the trials
-BASE_SIM_DIR = Path(r"N:\arctic-xbeach-runs\coupled_calibration_runs\20260214_calibration_runs\base")  # template run folder (config.yaml, x.grd, bed.dep, ne_layer.txt)
-RUN_ROOT_DIR = Path(r"N:\arctic-xbeach-runs\v11_runs\coupled_calibration")  # template, spin-up state, trial folders, optuna_study.db, logs
-THERMAL_CONFIG_YAML = Path(r"N:\arctic-xbeach-runs\v11_runs\thermal_calibration\optuna_trial_000490\config.yaml")  # best thermal trial of step 1 (RMSE 0.8203 K); its thermal section replaces the template's. None = keep the template's thermal section
-THERMAL_DT = 90        # [s] thermal timestep of the coupled runs, replaces thermal.dt of the config above (trial 490 was calibrated at 360 s, too large for a wet surface node). None = keep it
-BLUFF_EDGES_CSV = Path(r"D:\Git\thermo-morphological-model\database\ts_datasets\bluff_edges_without_geometry.csv")  # columns time, distance_from_ref
-SHORELINES_CSV = Path(r"D:\Git\thermo-morphological-model\database\ts_datasets\shore_lines_without_geometry.csv")
-FORCING_CSV = Path(r"N:\arctic-xbeach-runs\database\era5.csv")   # written into every config (None = keep the path of the base config)
-STORM_CSV = Path(r"N:\arctic-xbeach-runs\database\storms.csv")   # idem
-XBEACH_EXE = None   # path of xbeach.exe written into every config (None = keep the base config's)
+BASE_SIM_DIR = Path(os.environ.get("AXB_BASE_SIM_DIR", r"N:\arctic-xbeach-runs\v11_runs\coupled_base_v11"))  # template run folder (config.yaml, x.grd, bed.dep, ne_layer.txt); the v1.0 base with CFL_xbeach 0.9 instead of 0.7
+RUN_ROOT_DIR = Path(os.environ.get("AXB_RUN_ROOT", r"N:\arctic-xbeach-runs\v11_runs\coupled_calibration"))  # template, spin-up state, trial folders, optuna_study.db (or optuna_journal.log), logs
+THERMAL_CONFIG_YAML = Path(os.environ.get("AXB_THERMAL_CONFIG_YAML", r"N:\arctic-xbeach-runs\v11_runs\thermal_calibration\optuna_trial_000490\config.yaml"))  # best thermal trial of step 1 (RMSE 0.8203 K); its thermal section replaces the template's. None = keep the template's thermal section
+THERMAL_DT = int(os.environ.get("AXB_THERMAL_DT", 60))        # [s] thermal timestep of the coupled runs, replaces thermal.dt of the config above. 60 s, as the thermal calibration (wet surface node limit). None = keep it
+BLUFF_EDGES_CSV = Path(os.environ.get("AXB_BLUFF_EDGES_CSV", r"D:\Git\thermo-morphological-model\database\ts_datasets\bluff_edges_without_geometry.csv"))  # columns time, distance_from_ref
+SHORELINES_CSV = Path(os.environ.get("AXB_SHORELINES_CSV", r"D:\Git\thermo-morphological-model\database\ts_datasets\shore_lines_without_geometry.csv"))
+FORCING_CSV = Path(os.environ.get("AXB_FORCING_CSV", r"N:\arctic-xbeach-runs\database\era5.csv"))   # written into every config (None = keep the path of the base config)
+STORM_CSV = Path(os.environ.get("AXB_STORM_CSV", r"N:\arctic-xbeach-runs\database\storms.csv"))   # idem
+XBEACH_EXE = os.environ.get("AXB_XBEACH_EXE") or None   # path of xbeach.exe written into every config (None = keep the base config's)
 
-N_TRIALS = 10          # completed trials the study should reach; a rerun on an existing study runs only the rest
+N_TRIALS = int(os.environ.get("AXB_N_TRIALS", 10))          # completed trials the study should reach; a rerun on an existing study runs only the rest
                        # (published study: 25 epochs x 8 workers = 200)
-N_PARALLEL = 8         # trials running at the same time (one child process each)
+N_PARALLEL = int(os.environ.get("AXB_N_PARALLEL", 8))         # trials running at the same time (one child process each)
+MAX_FAILED_XBEACH_CALLS = int(os.environ.get("AXB_MAX_FAILED_XBEACH_CALLS", 0))  # a trial with more failed XBeach calls than this is not scored (inf)
+TIME_END = os.environ.get("AXB_TIME_END") or None   # 'DD-MM-YYYY', replaces model.time_end of the template (short smoke test); None = keep it
 SEED = 1               # seed of the TPE sampler (with N_PARALLEL > 1 the order in which trials finish still varies)
 START_PARAMS = None    # enqueue this parameter set as the first trial of a new study. Example: the published best (trial 88, value 4.1222)
 # START_PARAMS = dict(facua=0.018829910025755153, bedfriccoef=0.033501187112818874, wetslp=0.15233427680340267,
@@ -51,15 +64,23 @@ BLUFF_ELEVATION = 13.2       # [m]
 CALIB_START, CALIB_END = "2012-01-01", "2016-01-01"   # observations in this period enter the RMSE
 NORMALIZATION_DATE = "2012-07-11"                      # model and observations are matched at this date (offset removed)
 
-STUDY_NAME = "calibration_optuna"
+STUDY_NAME = os.environ.get("AXB_STUDY_NAME", "calibration_optuna")
+STORAGE = os.environ.get("AXB_STORAGE", "sqlite")  # "sqlite" (RUN_ROOT_DIR/optuna_study.db) or "journal" (RUN_ROOT_DIR/optuna_journal.log, for NFS)
+SCRATCH = Path(os.environ["AXB_SCRATCH"]) if os.environ.get("AXB_SCRATCH") else None  # trials run here and are copied back to RUN_ROOT_DIR; None = run in RUN_ROOT_DIR
+KEEP_XB_FILES = os.environ.get("AXB_KEEP_XB_FILES", "1").lower() not in ("0", "false", "no")  # False = delete results/xb_files of a trial after scoring (about 26,000 files per trial; no effect with SCRATCH: never copied back)
+CONSTANT_LIAR = os.environ.get("AXB_CONSTANT_LIAR", "0").lower() in ("1", "true", "yes")  # with ~40 parallel trials this keeps TPE from proposing near-duplicates of the trials still running
 MAKE_FIGURE = True
 REMOVE_RESULTS_NC = True
 # === END CONFIGURATION ===
 
+# One BLAS / OpenMP thread per process: 40 trials would otherwise each try to use all cores. Set before numpy is imported;
+# the child processes (and XBeach) inherit them (main.py sets the same OpenBLAS default for its own runs).
+for _var in ("OPENBLAS_NUM_THREADS", "OMP_NUM_THREADS", "MKL_NUM_THREADS"):
+    os.environ.setdefault(_var, "1")
+
 import datetime
 import gc
 import json
-import os
 import shutil
 import subprocess
 import sys
@@ -67,6 +88,10 @@ import threading
 import time
 import warnings
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))  # so that optuna_hpc is found when the file is not run as a script
+sys.path.insert(0, str(REPO_DIR))  # for arctic_xbeach.config_loader
+from arctic_xbeach.config_loader import load_config  # a duplicate key in a config.yaml is an error
+import optuna_hpc as hpc  # calibration/optuna_hpc.py, next to this script
 import matplotlib
 matplotlib.use("Agg")  # non-interactive backend
 import matplotlib.pyplot as plt
@@ -132,13 +157,14 @@ def apply_common_options(config: dict) -> dict:
         config["data"]["storm_data_path"] = str(STORM_CSV)
     if XBEACH_EXE is not None:
         config["xbeach"]["version"] = str(XBEACH_EXE)
+    config.setdefault("output", {})["log_xbeach_calls"] = True  # xbeach_calls.csv is how failed XBeach calls are counted
     return config
 
 
 def update_config_yaml(sim_dir: Path, params: dict, extra_model: dict | None = None):
     """Write the sampled XBeach / wrapper parameters (and extra model options) into config.yaml of a trial."""
     config_path = sim_dir / "config.yaml"
-    config = yaml.safe_load(config_path.read_text())
+    config = load_config(config_path)
     clean = {}
     for k, v in params.items():
         clean[k] = int(v) if isinstance(v, np.integer) else float(v) if isinstance(v, np.floating) else v.tolist() if isinstance(v, np.ndarray) else v
@@ -167,11 +193,13 @@ def prepare_template() -> Path:
     if template.exists():
         shutil.rmtree(template)
     shutil.copytree(BASE_SIM_DIR, template)
-    config = yaml.safe_load((template / "config.yaml").read_text())
+    config = load_config(template / "config.yaml")
     if THERMAL_CONFIG_YAML is not None:
-        config["thermal"] = yaml.safe_load(Path(THERMAL_CONFIG_YAML).read_text())["thermal"]
+        config["thermal"] = load_config(Path(THERMAL_CONFIG_YAML))["thermal"]
     if THERMAL_DT is not None:
         config["thermal"]["dt"] = THERMAL_DT  # after the replacement above, which brings the dt of the thermal calibration
+    if TIME_END is not None:
+        config["model"]["time_end"] = TIME_END
     apply_common_options(config)
     (template / "config.yaml").write_text(yaml.dump(config, default_flow_style=False))
     return template
@@ -189,7 +217,7 @@ def launch(sim_dir: Path) -> int:
 def ensure_spinup_state(template: Path) -> Path:
     """Create RUN_ROOT_DIR/spinup_state.npz once (spin-up without XBeach). An existing file must match the template's thermal config."""
     state = RUN_ROOT_DIR / "spinup_state.npz"
-    config = yaml.safe_load((template / "config.yaml").read_text())
+    config = load_config(template / "config.yaml")
 
     if state.exists():
         sys.path.insert(0, str(REPO_DIR))
@@ -253,7 +281,7 @@ def results_end_problem(sim_dir: Path, last_time) -> str | None:
     The scored period ends at CALIB_END or model.time_end of the trial config, whichever is earlier. The XBeach records
     (time_xbeach) are only written at XBeach calls and can stop weeks before the end, so the thermal records are checked. They are
     labelled at the end of their step and written every output_res steps: a complete run ends within one record spacing of it."""
-    cfg = yaml.safe_load((sim_dir / "config.yaml").read_text())
+    cfg = load_config(sim_dir / "config.yaml")
     end = min(pd.to_datetime(cfg["model"]["time_end"], dayfirst=True), pd.Timestamp(CALIB_END))
     spacing = pd.Timedelta(hours=cfg["model"]["timestep"] * cfg["output"]["output_res"])
     if pd.Timestamp(last_time) < end - spacing:
@@ -261,21 +289,45 @@ def results_end_problem(sim_dir: Path, last_time) -> str | None:
     return None
 
 
-def run_simulation(sim_dir: Path) -> float:
-    """Run one trial in a child process and return the combined RMSE (inf if the run or the scoring failed).
+def count_failed_xbeach_calls(sim_dir: Path) -> int | None:
+    """Number of XBeach calls with success = 0 in results/xbeach_calls.csv (written by main.py, one row per call), None if the
+    file is missing. main.py logs a failed call and carries on, so only this file shows it."""
+    path = sim_dir / "results" / "xbeach_calls.csv"
+    if not path.exists():
+        return None
+    return int((pd.read_csv(path)["success"] == 0).sum())
 
-    A child with a nonzero exit code, or a results.nc that stops before the end of the scored period, is not scored."""
+
+def run_simulation(sim_dir: Path) -> tuple[float, int | None]:
+    """Run one trial in a child process and return (combined RMSE, number of failed XBeach calls).
+
+    The RMSE is inf if the run or the scoring failed: a child with a nonzero exit code, a results.nc that stops before the end of
+    the scored period, or more than MAX_FAILED_XBEACH_CALLS failed XBeach calls is not scored. The count is None if it is unknown."""
     returncode = launch(sim_dir)
     print(f" => simulation finished: {sim_dir.name}")
 
     nc_path = sim_dir / "results" / "results.nc"
+    n_failed = None
     try:
         if returncode != 0:  # a killed run can leave a partial results.nc
             print(f"  => run failed (exit code {returncode}), not scored: {sim_dir.name}")
-            return float("inf")
+            return float("inf"), n_failed
         if not nc_path.exists():
             print(f"  WARNING: results file not found: {nc_path}")
-            return float("inf")
+            return float("inf"), n_failed
+
+        cfg = load_config(sim_dir / "config.yaml")
+        if cfg.get("xbeach", {}).get("with_xbeach", True):
+            n_failed = count_failed_xbeach_calls(sim_dir)
+            if n_failed is None:
+                print(f"  => xbeach_calls.csv not found in {sim_dir / 'results'} (no XBeach call was made, or output.log_xbeach_calls is false), "
+                      f"failed calls cannot be counted, not scored: {sim_dir.name}")
+                return float("inf"), n_failed
+            if n_failed > MAX_FAILED_XBEACH_CALLS:
+                print(f"  => {n_failed} failed XBeach calls (allowed: {MAX_FAILED_XBEACH_CALLS}), not scored: {sim_dir.name}")
+                return float("inf"), n_failed
+        else:
+            n_failed = 0
 
         with POSTPROC_LOCK:  # variables are loaded inside the lock (xarray reads lazily), the loop below then works on memory
             with xr.open_dataset(nc_path, engine="netcdf4") as ds:
@@ -285,7 +337,7 @@ def run_simulation(sim_dir: Path) -> float:
         problem = results_end_problem(sim_dir, last_time)
         if problem:
             print(f"  => run incomplete, not scored: {problem}")
-            return float("inf")
+            return float("inf"), n_failed
         n_times = len(time_datetime)
 
         shoreline_pos, bluff_pos = np.zeros(n_times), np.zeros(n_times)
@@ -344,11 +396,11 @@ def run_simulation(sim_dir: Path) -> float:
                 plt.close(fig)
 
         gc.collect()
-        return combined
+        return combined, n_failed
 
     except Exception as e:
         print(f"  ERROR processing results of {sim_dir.name}: {e}")
-        return float("inf")
+        return float("inf"), n_failed
 
     finally:
         if REMOVE_RESULTS_NC and nc_path.exists():
@@ -376,19 +428,22 @@ def objective(trial: optuna.Trial) -> float:
         else:
             params[k] = trial.suggest_float(k, float(v[0]), float(v[1]))
 
-    sim_dir = RUN_ROOT_DIR / f"optuna_trial_{trial.number:06d}"
-    if sim_dir.exists():
-        shutil.rmtree(sim_dir)
-    shutil.copytree(TEMPLATE, sim_dir)
-    update_config_yaml(sim_dir, params, extra_model={"spinup_state_in": str(SPINUP_STATE)} if SPINUP_STATE else None)
-
-    rmse = run_simulation(sim_dir)
+    work_dir, sim_dir = hpc.trial_dirs(RUN_ROOT_DIR, SCRATCH, trial.number)  # the same folder unless SCRATCH is set
+    try:
+        if work_dir.exists():
+            shutil.rmtree(work_dir)
+        shutil.copytree(TEMPLATE, work_dir)
+        update_config_yaml(work_dir, params, extra_model={"spinup_state_in": str(SPINUP_STATE)} if SPINUP_STATE else None)
+        rmse, n_failed = run_simulation(work_dir)
+    finally:  # also after a failed run: run.log is needed
+        hpc.finish_trial_dir(work_dir, sim_dir, not REMOVE_RESULTS_NC, KEEP_XB_FILES)
     trial.set_user_attr("sim_dir", str(sim_dir))
     trial.set_user_attr("rmse", float(rmse))
+    trial.set_user_attr("n_failed_xbeach_calls", n_failed)  # None if the run did not get as far as counting
 
     try:
-        with open(RUN_ROOT_DIR / "calibration_prints.txt", "a", encoding="utf-8") as f:
-            f.write(f"Trial {trial.number} completed.\n  Parameters: {params}\n  RMSE: {rmse}\n  Simulation directory: {sim_dir}\n")
+        hpc.append_log(RUN_ROOT_DIR / "calibration_prints.txt",
+                       f"Trial {trial.number} completed.\n  Parameters: {params}\n  RMSE: {rmse}\n  Simulation directory: {sim_dir}\n")
     except Exception:
         pass
     return float(rmse)
@@ -398,18 +453,13 @@ def main():
     global SPINUP_STATE, TEMPLATE
     RUN_ROOT_DIR.mkdir(parents=True, exist_ok=True)
     print_log = RUN_ROOT_DIR / "calibration_prints.txt"
-    with open(print_log, "a", encoding="utf-8") as f:
-        f.write(f"Calibration run started: {datetime.datetime.now()}\n")
+    hpc.append_log(print_log, f"Calibration run started: {datetime.datetime.now()}\n")
 
     TEMPLATE = prepare_template()
     if USE_SPINUP_STATE:
         SPINUP_STATE = ensure_spinup_state(TEMPLATE)
 
-    study = optuna.create_study(  # load_if_exists: a rerun continues the study
-        study_name=STUDY_NAME, direction="minimize", load_if_exists=True,
-        storage=f"sqlite:///{(RUN_ROOT_DIR / 'optuna_study.db').as_posix()}",
-        sampler=optuna.samplers.TPESampler(seed=SEED),
-    )
+    study = hpc.open_study(STUDY_NAME, RUN_ROOT_DIR, STORAGE, optuna.samplers.TPESampler(seed=SEED, constant_liar=CONSTANT_LIAR))  # a rerun continues the study
     if START_PARAMS is not None and len(study.trials) == 0:
         study.enqueue_trial(START_PARAMS)  # first trial of a new study
 
@@ -420,15 +470,13 @@ def main():
         study.optimize(objective, n_trials=n_todo, n_jobs=N_PARALLEL, callbacks=[lambda study, trial: gc.collect()])
     except KeyboardInterrupt:
         print("Optimization interrupted by user.")
-        with open(print_log, "a", encoding="utf-8") as f:
-            f.write("Optimization interrupted by user.\n")
+        hpc.append_log(print_log, "Optimization interrupted by user.\n")
 
     try:
         study.trials_dataframe().to_csv(RUN_ROOT_DIR / "calibration_results.csv", index=False)
         best = study.best_trial
-        with open(print_log, "a", encoding="utf-8") as f:
-            f.write(f"\nCalibration finished: {datetime.datetime.now()}\nBest parameters found: {best.params}\n"
-                    f"Best trial number: {best.number}\nBest RMSE: {best.value}\n")
+        hpc.append_log(print_log, f"\nCalibration finished: {datetime.datetime.now()}\nBest parameters found: {best.params}\n"
+                                  f"Best trial number: {best.number}\nBest RMSE: {best.value}\n")
         print("Best parameters found:", best.params)
         print("Best trial number:", best.number)
         print("Best RMSE:", best.value)

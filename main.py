@@ -49,7 +49,7 @@ import gc
 # Arctic-XBeach modules
 from arctic_xbeach.model import Simulation
 from arctic_xbeach.bathymetry import generate_schematized_bathymetry
-from arctic_xbeach.miscellaneous import textbox, datetime_from_timestamp
+from arctic_xbeach.miscellaneous import textbox, datetime_from_timestamp, resolve_path
 from arctic_xbeach.diagnostics import RunDiagnostics, memory_status
 from arctic_xbeach.run_lock import acquire_run_lock, release_run_lock
 from arctic_xbeach.version import run_header
@@ -132,23 +132,12 @@ def _main(sim, print_to_screen=True):
     # -------------------------------------------------------------------------
     # Load Forcing Data
     # -------------------------------------------------------------------------
-    # Handle absolute vs relative paths
-    forcing_path = sim.config.data.forcing_data_path
-    if ':' in forcing_path:  # Drive letter present (Windows absolute path)
-        forcing_path = forcing_path
-    else:
-        forcing_path = os.path.join(sim.proj_dir, forcing_path)
-    
+    # Handle absolute (Windows drive or POSIX) vs relative paths
+    forcing_path = resolve_path(sim.config.data.forcing_data_path, sim.proj_dir)
     sim.load_forcing(forcing_path)
     logger.debug("Successfully loaded forcing")
     
-    # Handle absolute vs relative paths
-    storm_path = sim.config.data.storm_data_path
-    if ':' in storm_path:  # Drive letter present (Windows absolute path)
-        storm_path = storm_path
-    else:
-        storm_path = os.path.join(sim.proj_dir, storm_path)
-    
+    storm_path = resolve_path(sim.config.data.storm_data_path, sim.proj_dir)
     sim.initialize_hydro_forcing(storm_path)
     logger.debug("Successfully loaded hydrodynamic forcing")
     
@@ -329,7 +318,7 @@ def _main(sim, print_to_screen=True):
 
             t_call = time.perf_counter()
             run_successful = sim.start_xbeach(
-                os.path.join(sim.proj_dir, Path(sim.config.xbeach.version)),
+                resolve_path(sim.config.xbeach.version, sim.proj_dir),
                 sim.cwd,
                 timestep_id=timestep_id
             )

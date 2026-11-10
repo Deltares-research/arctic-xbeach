@@ -35,6 +35,8 @@ cd arctic-xbeach
 
 ### Step 2: Install Python dependencies
 
+Python 3.12 or newer is required. On Windows or Linux you can also create the environment from `environment.yml` (`conda env create -f environment.yml`) and then run `pip install -e .` from the repository root. Add the Optuna calibration drivers with `pip install -e ".[calibration]"`.
+
 ```bash
 # Install package in editable mode
 pip install -e .
@@ -128,6 +130,12 @@ Or from command line:
 ```bash
 python main.py examples/case_studies/barter_island
 ```
+
+---
+
+## Linux / HPC
+
+The model and the Optuna calibration drivers run on Linux. Job scripts, environment setup and a step-by-step guide for the Deltares H7 cluster (SLURM) are in [`hpc/h7/README_H7.md`](hpc/h7/README_H7.md); the `AXB_*` environment variables that configure the drivers are listed in [`calibration/README.md`](calibration/README.md).
 
 ---
 

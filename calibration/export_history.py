@@ -3,6 +3,7 @@
 The study database is copied to a temporary folder first (together with any -wal / -shm files) and read with sqlite3 in
 read-only mode, so a database that a running calibration is writing to is never touched. Only the standard Optuna tables
 (trials, trial_values, trial_params) are used, so this does not depend on the Optuna version.
+A journal study (STORAGE = "journal", optuna_journal.log of the HPC runs) is copied to a temporary folder as well and loaded with Optuna.
 
 Best-so-far is evaluated in two orders:
   by trial number     the Optuna convention (optimization history plot). With several parallel workers a lower number is not
@@ -10,11 +11,20 @@ Best-so-far is evaluated in two orders:
   by completion time  the order in which trials actually finished; "completed trials" is the number of finished trials at that moment.
 """
 # === CONFIGURATION ===
+# The AXB_* environment variables override the defaults below (as in the drivers). AXB_RUN_ROOT exports the one study in that run folder instead of the two published ones.
+import os
+
+STORAGE = os.environ.get("AXB_STORAGE", "sqlite")  # "sqlite" (optuna_study.db) or "journal" (optuna_journal.log)
+STUDY_NAME = os.environ.get("AXB_STUDY_NAME", "calibration_optuna")  # journal only; a sqlite database has one study (STUDY_ID)
 STUDIES = [  # label (also the file stem of the outputs), path to optuna_study.db, objective label for the figure
     ("thermal_20260201", r"N:\arctic-xbeach-runs\thermal_calibration_runs\20260201_calibration_runs\optuna_study.db", "Ground temperature RMSE (K)"),
     ("coupled_20260214", r"N:\arctic-xbeach-runs\coupled_calibration_runs\20260214_calibration_runs\optuna_study.db", "Combined RMSE (m)"),
 ]
-OUT_DIR = r"D:\Git\arctic-xbeach-v11\calibration\published_history"
+if os.environ.get("AXB_RUN_ROOT"):
+    _root = os.environ["AXB_RUN_ROOT"]
+    STUDIES = [(os.path.basename(_root.rstrip("/\\")), os.path.join(_root, "optuna_journal.log" if STORAGE == "journal" else "optuna_study.db"),
+                os.environ.get("AXB_OBJECTIVE_LABEL", "Objective"))]
+OUT_DIR = os.environ.get("AXB_EXPORT_DIR", r"D:\Git\arctic-xbeach-v11\calibration\published_history")
 STUDY_ID = 1                 # study inside the database (the drivers create one study per database)
 THRESHOLDS = (0.01, 0.001)   # relative distance to the final best at which "converged" is reported (1 % and 0.1 %)
 DPI = 300
@@ -32,8 +42,29 @@ import numpy as np
 import pandas as pd
 
 
+def read_journal(path: Path, study_name: str) -> pd.DataFrame:
+    """Same table as read_study, from a journal file (copied to a temporary folder first)."""
+    import optuna
+    from optuna.storages import JournalStorage
+    from optuna.storages.journal import JournalFileBackend
+    optuna.logging.set_verbosity(optuna.logging.WARNING)
+    with tempfile.TemporaryDirectory() as tmp:
+        copy = Path(tmp) / path.name
+        shutil.copy2(path, copy)
+        study = optuna.load_study(study_name=study_name, storage=JournalStorage(JournalFileBackend(str(copy))))
+        trials = study.trials_dataframe(attrs=("number", "state", "value", "datetime_start", "datetime_complete", "params"))
+    trials = trials.rename(columns={c: c.removeprefix("params_") for c in trials.columns})
+    trials.loc[~np.isfinite(trials["value"]), "value"] = np.nan  # failed runs are stored as +inf by the drivers
+    trials["duration_s"] = (trials["datetime_complete"] - trials["datetime_start"]).dt.total_seconds()
+    trials["trial_id"] = trials["number"]
+    trials["value_type"] = "FINITE"
+    return trials
+
+
 def read_study(db_path: Path, study_id: int) -> pd.DataFrame:
     """One row per trial: number, state, value (NaN if not finite), times and parameters."""
+    if STORAGE == "journal":
+        return read_journal(db_path, STUDY_NAME)
     with tempfile.TemporaryDirectory() as tmp:
         for suffix in ("", "-wal", "-shm"):
             src = Path(str(db_path) + suffix)

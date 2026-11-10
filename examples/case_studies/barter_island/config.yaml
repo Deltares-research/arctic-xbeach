@@ -72,7 +72,7 @@ xbeach:
 
   # general settings
   with_xbeach : True  # include the xbeach module in the model, default true
-  version     : d:\software\XBeach\releases\halloween\XBeach_1.24.6057_Halloween_win64_netcdf\xbeach.exe  # path to the XBeach executable (published runs: XBeach 1.24.6057 Halloween, win64 netcdf)
+  version     : d:\software\XBeach\releases\halloween\XBeach_1.24.6057_Halloween_win64_netcdf\xbeach.exe  # path to the XBeach executable (published runs: XBeach 1.24.6057 Halloween, win64 netcdf; on Linux: /path/to/xbeach)
 
   # physical processes:
   with_wind     : False  # include wind in the xbeach model

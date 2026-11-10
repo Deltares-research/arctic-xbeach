@@ -1,6 +1,6 @@
 # Core
 numpy>=1.21
-pandas>=1.3
+pandas>=2,<3
 xarray>=0.19
 netCDF4>=1.5
 scipy>=1.7
@@ -10,7 +10,10 @@ shapely>=1.8
 psutil>=5.8
 
 # XBeach toolbox
-xbTools @ git+https://github.com/openearth/xbeach-toolbox.git
+xbTools @ git+https://github.com/openearth/xbeach-toolbox.git@da79e6ab3f495a23cf08e70cf38296a7da11822b
+
+# Calibration (Optuna drivers in calibration/)
+optuna>=4.6
 
 # Testing & Development
 pytest>=7.0

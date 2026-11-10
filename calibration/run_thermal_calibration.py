@@ -13,20 +13,27 @@ False in the base config), compare the modelled ground temperature in the column
 nonzero exit code, or a results.nc that stops before the end of the scored period, is not scored.
 
 Run:  python calibration/run_thermal_calibration.py        (see calibration/README.md)
+
+On a Linux cluster the same script is configured through AXB_* environment variables (hpc/h7/thermal_calibration.sbatch). With
+STORAGE = "journal" the study is an append-only file that is safe on NFS; with SCRATCH set each trial runs on that (local) disk and
+is copied back to RUN_ROOT_DIR. Only ONE driver process per study is supported (the sbatch file uses --dependency=singleton): with
+journal storage, trials still RUNNING at start are taken to be left by a killed earlier job and are marked FAIL.
 """
 # === CONFIGURATION ===
+# The AXB_* environment variables override the defaults below (used by hpc/h7/*.sbatch); without them nothing changes.
+import os
 from pathlib import Path
 
 REPO_DIR = Path(__file__).resolve().parents[1]  # arctic-xbeach checkout that is imported by the trials
-BASE_SIM_DIR = Path(r"N:\arctic-xbeach-runs\thermal_calibration_runs\20260201_calibration_runs\base")  # template run folder (config.yaml, x.grd, bed.dep, ne_layer.txt)
-RUN_ROOT_DIR = Path(r"N:\arctic-xbeach-runs\v11_runs\thermal_calibration")  # trial folders, optuna_study.db, logs are written here
-OBSERVATION_CSV = Path(r"D:\Git\thermo-morphological-model\database\raw_datasets\erikson2\Temp_arrays USGS-UCSC_Oberle\BI_T-1_processed.csv")
-FORCING_CSV = Path(r"N:\arctic-xbeach-runs\database\era5.csv")   # written into every trial config (None = keep the path of the base config)
-STORM_CSV = Path(r"N:\arctic-xbeach-runs\database\storms.csv")   # idem
+BASE_SIM_DIR = Path(os.environ.get("AXB_BASE_SIM_DIR", r"N:\arctic-xbeach-runs\thermal_calibration_runs\20260201_calibration_runs\base"))  # template run folder (config.yaml, x.grd, bed.dep, ne_layer.txt)
+RUN_ROOT_DIR = Path(os.environ.get("AXB_RUN_ROOT", r"N:\arctic-xbeach-runs\v11_runs\thermal_calibration"))  # trial folders, optuna_study.db (or optuna_journal.log), logs are written here
+OBSERVATION_CSV = Path(os.environ.get("AXB_OBS_CSV", r"D:\Git\thermo-morphological-model\database\raw_datasets\erikson2\Temp_arrays USGS-UCSC_Oberle\BI_T-1_processed.csv"))
+FORCING_CSV = Path(os.environ.get("AXB_FORCING_CSV", r"N:\arctic-xbeach-runs\database\era5.csv"))   # written into every trial config (None = keep the path of the base config)
+STORM_CSV = Path(os.environ.get("AXB_STORM_CSV", r"N:\arctic-xbeach-runs\database\storms.csv"))   # idem
 
-N_TRIALS = 1000        # completed trials the study should reach; a rerun on an existing study runs only the rest
+N_TRIALS = int(os.environ.get("AXB_N_TRIALS", 1000))        # completed trials the study should reach; a rerun on an existing study runs only the rest
                        # (published study: 125 epochs x 8 workers = 1000)
-N_PARALLEL = 8         # trials running at the same time (one child process each)
+N_PARALLEL = int(os.environ.get("AXB_N_PARALLEL", 8))         # trials running at the same time (one child process each)
 SEED = 1               # seed of the TPE sampler. With N_PARALLEL > 1 the order in which trials finish still varies, so runs are not bit-reproducible
 # enqueue this parameter set as the first trial of a new study (names of the suggest_* calls below); None = no start set
 START_PARAMS = dict(nb_min=0.46951231603096133, nb_increase=0.24059594350455396, transition_top=0.41887032171820293,
@@ -37,16 +44,25 @@ START_PARAMS = dict(nb_min=0.46951231603096133, nb_increase=0.24059594350455396,
 # v1.1 solver options written into every trial config (thermal.* and data.*). Use the legacy values (nodal, per_mass, 0) for the v1.0 solver.
 SOLVER_OPTIONS = dict(conduction_form="flux", latent_heat_form="volumetric")
 ERA5_FLUX_SHIFT_HOURS = 1
-THERMAL_DT = 360       # thermal substep [s]. 360 s keeps Fo <= 0.38 over the whole search range (k up to 4.0, C down to 1.5e6) and
-                       # changes the objective of the published best by 0.0001 K against 120 s (v11_runs/thermal_speed_tests); None = base config
+THERMAL_DT = int(os.environ.get("AXB_THERMAL_DT", 60))       # thermal substep [s]. 60 s: largest divisor of 3600 below 75 s, the limit dt <= (1 - 2Fo) C_frozen dz / (2 hc) of the wet surface node (Barter, 3 Nov)
+                       # thaw depth does not depend on dt (column test); 360 s changed the objective by 0.0001 K. None = base config
 OUTPUT_WINDOW = ("31-05-2016", "15-09-2016")  # netCDF output only over the borehole record (BI_T-1); None = whole run
-SENSOR_DEPTH_OFFSET = 0.0  # [m] added to each sensor depth before the nearest-node lookup. Nodes are cell centres, so 0 is the true depth.
+SENSOR_DEPTH_OFFSET = float(os.environ.get("AXB_SENSOR_DEPTH_OFFSET", 0.0))  # [m] added to each sensor depth before the nearest-node lookup. Nodes are cell centres, so 0 is the true depth.
                           # 0.1 repeats the published objective and thermal trial 490 (0.82 K at dt 90 s); it is 2 cells of the 0.05 m grid
 
-STUDY_NAME = "calibration_optuna"
+STUDY_NAME = os.environ.get("AXB_STUDY_NAME", "calibration_optuna")
+STORAGE = os.environ.get("AXB_STORAGE", "sqlite")  # "sqlite" (RUN_ROOT_DIR/optuna_study.db) or "journal" (RUN_ROOT_DIR/optuna_journal.log, for NFS)
+SCRATCH = Path(os.environ["AXB_SCRATCH"]) if os.environ.get("AXB_SCRATCH") else None  # trials run here and are copied back to RUN_ROOT_DIR; None = run in RUN_ROOT_DIR
+KEEP_XB_FILES = os.environ.get("AXB_KEEP_XB_FILES", "1").lower() not in ("0", "false", "no")  # False = delete results/xb_files of a trial after scoring (no effect with SCRATCH: never copied back)
+CONSTANT_LIAR = os.environ.get("AXB_CONSTANT_LIAR", "0").lower() in ("1", "true", "yes")  # with ~40 parallel trials this keeps TPE from proposing near-duplicates of the trials still running
 MAKE_FIGURE = True     # temperature_layers.png in every trial folder
 KEEP_RESULTS_NC = False  # the results.nc of a trial is deleted after the skill has been computed
 # === END CONFIGURATION ===
+
+# One BLAS / OpenMP thread per process: 40 trials would otherwise each try to use all cores. Set before numpy is imported;
+# the child processes inherit them (main.py sets the same OpenBLAS default for its own runs).
+for _var in ("OPENBLAS_NUM_THREADS", "OMP_NUM_THREADS", "MKL_NUM_THREADS"):
+    os.environ.setdefault(_var, "1")
 
 import datetime
 import gc
@@ -56,6 +72,10 @@ import sys
 import threading
 import warnings
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))  # so that optuna_hpc is found when the file is not run as a script
+sys.path.insert(0, str(REPO_DIR))  # for arctic_xbeach.config_loader
+from arctic_xbeach.config_loader import load_config  # a duplicate key in a config.yaml is an error
+import optuna_hpc as hpc  # calibration/optuna_hpc.py, next to this script
 import matplotlib
 matplotlib.use("Agg")  # non-interactive backend
 import matplotlib.pyplot as plt
@@ -134,7 +154,7 @@ def suggest_thermal_params(trial: optuna.Trial) -> dict:
 def update_config_yaml(sim_dir: Path, params: dict):
     """Write sampled parameters into thermal (only keys that exist there), then the v1.1 options and the forcing paths."""
     config_path = sim_dir / "config.yaml"
-    config = yaml.safe_load(config_path.read_text())
+    config = load_config(config_path)
 
     for k, v in params.items():
         if isinstance(v, np.integer):
@@ -164,26 +184,33 @@ def compute_rmse_mae(obs_vals, model_vals):
     return np.sqrt(np.mean((obs_vals - model_vals) ** 2)), np.mean(np.abs(obs_vals - model_vals))
 
 
-def compute_metrics(model_time, model_temp, obs_time, obs_temp):
-    """RMSE, MAE and bias of the model at the observation times (nearest model time)."""
+def compute_metrics_n(model_time, model_temp, obs_time, obs_temp):
+    """RMSE, MAE, bias and number of valid pairs of the model at the observation times (nearest model time)."""
     df_model = pd.DataFrame({"time": pd.to_datetime(model_time), "temp": model_temp}).sort_values("time")
     df_obs = pd.DataFrame({"time": pd.to_datetime(obs_time), "temp": obs_temp}).sort_values("time")
     merged = pd.merge_asof(df_obs, df_model, on="time", direction="nearest", suffixes=("_obs", "_model"))
     valid = ~pd.isnull(merged["temp_obs"]) & ~pd.isnull(merged["temp_model"])
     obs_vals, model_vals = merged.loc[valid, "temp_obs"], merged.loc[valid, "temp_model"]
     rmse, mae = compute_rmse_mae(obs_vals, model_vals)
-    return rmse, mae, (model_vals - obs_vals).mean()
+    return rmse, mae, (model_vals - obs_vals).mean(), int(valid.sum())
 
 
-def results_end_problem(sim_dir: Path, last_time) -> str | None:
+def compute_metrics(model_time, model_temp, obs_time, obs_temp):
+    """RMSE, MAE and bias of the model at the observation times (nearest model time)."""
+    return compute_metrics_n(model_time, model_temp, obs_time, obs_temp)[:3]
+
+
+def results_end_problem(sim_dir: Path, last_time, output_window: tuple[str, str] | None = None) -> str | None:
     """None if the last results.nc record reaches the end of the scored period, else the reason.
 
     The scored period ends at model.time_end of the trial config or at the end of OUTPUT_WINDOW, whichever is earlier. Records are
-    labelled at the end of their step and written every output_res steps, so a complete run ends within one record spacing of it."""
-    cfg = yaml.safe_load((sim_dir / "config.yaml").read_text())
+    labelled at the end of their step and written every output_res steps, so a complete run ends within one record spacing of it.
+    output_window=None uses OUTPUT_WINDOW."""
+    cfg = load_config(sim_dir / "config.yaml")
     end = pd.to_datetime(cfg["model"]["time_end"], dayfirst=True)
-    if OUTPUT_WINDOW is not None:
-        end = min(end, pd.to_datetime(OUTPUT_WINDOW[1], dayfirst=True))
+    window = output_window or OUTPUT_WINDOW
+    if window is not None:
+        end = min(end, pd.to_datetime(window[1], dayfirst=True))
     spacing = pd.Timedelta(hours=cfg["model"]["timestep"] * cfg["output"]["output_res"])
     if pd.Timestamp(last_time) < end - spacing:
         return f"results.nc stops at {pd.Timestamp(last_time)}, before the end of the scored period ({end})"
@@ -214,6 +241,82 @@ gc.collect()
 """
 
 
+def score_borehole_2016(sim_dir: Path, sensor_depth_offset: float = SENSOR_DEPTH_OFFSET, make_figure: bool = MAKE_FIGURE,
+                        output_window: tuple[str, str] | None = None) -> tuple[float, pd.DataFrame]:
+    """Score results/results.nc of sim_dir against the borehole record (BI_T-1, 17 depths) and return (objective, per-depth table).
+
+    The objective is the mean RMSE over the depths, times 10 if the surface never gets above 0.01 degC. The table has the columns
+    depth_m (sensor depth), rmse, mae, bias, n. Writes rmse_bias_layers.txt and, with make_figure, temperature_layers.png into sim_dir.
+    A results.nc that stops before the end of the scored period gives (inf, empty table). output_window=None uses OUTPUT_WINDOW."""
+    nc_path = sim_dir / "results" / "results.nc"
+    df_val = pd.read_csv(OBSERVATION_CSV, parse_dates=["date_time"])
+
+    with POSTPROC_LOCK, Dataset(nc_path, "r") as nc:
+        time_units = nc.variables["time"].units
+        time_dt = netCDF4.num2date(nc.variables["time"][:], units=time_units)
+        time_pd = pd.to_datetime(np.array([to_native_datetime(t) for t in time_dt]))
+        ground_temp = nc.variables["ground_temperature_distribution"][:]  # (nt, nx, nz)
+        abs_zgr = nc.variables["abs_zgr"][:][0, 1, :]  # column of grid point 1, as in the published driver
+
+    problem = results_end_problem(sim_dir, time_pd[-1], output_window)
+    if problem:
+        print(f"  => run incomplete, not scored: {problem}")
+        return float("inf"), pd.DataFrame(columns=["depth_m", "rmse", "mae", "bias", "n"])
+
+    depth_model = (abs_zgr - abs_zgr[0]) * -1
+    depths_cm = [d for d in range(0, 426, 25) if d != 75]  # 0, 25, 50, 100, ..., 425 cm (17 depths)
+
+    rmse_list, bias_list, rows, model_temps = [], [], [], {}
+    surface_temp_model = None
+    for d in depths_cm:
+        col = f"dpth{d}cm"
+        idx = np.abs(depth_model - (d / 100 + sensor_depth_offset)).argmin()
+        model_temp = ground_temp[:, 1, idx] - 273.15  # K to degC, middle grid point
+        model_temps[col] = model_temp
+        if col == "dpth0cm":
+            surface_temp_model = model_temp.copy()
+        rmse, mae, bias, n = compute_metrics_n(time_pd, model_temp, df_val["date_time"], df_val[col])
+        rmse_list.append(rmse)
+        bias_list.append(bias)
+        rows.append(dict(depth_m=d / 100, rmse=rmse, mae=mae, bias=bias, n=n))
+
+    rmse_mean = np.mean(rmse_list)
+    rmse_weight = np.average(rmse_list, weights=np.ones(len(rmse_list)))  # all depths equally weighted
+
+    # penalty: a surface that never gets above freezing means the model never thawed
+    if surface_temp_model is not None and np.all(surface_temp_model < 0.01):
+        rmse_weight *= 10.0
+        print("  WARNING: surface temperature (dpth0cm) is never above zero. Applying penalty factor 10x")
+
+    with open(sim_dir / "rmse_bias_layers.txt", "w") as f:
+        f.write(f"Weighted RMSE: {rmse_weight:.4f}\nMean RMSE: {rmse_mean:.4f}\n\n")
+        for d, r, b in zip(depths_cm, rmse_list, bias_list):
+            f.write(f"dpth{d}cm: RMSE={r:.4f}, Bias={b:.4f}\n")
+
+    if make_figure:
+        with POSTPROC_LOCK:
+            selected = [0, 50, 100, 200, 300]
+            fig, axs = plt.subplots(len(selected), 1, figsize=(18, 12), sharex=True)
+            for ax, d, color in zip(axs, selected, ["C0", "C1", "C2", "C3", "C4"]):
+                col = f"dpth{d}cm"
+                rmse, mae, bias = compute_metrics(time_pd, model_temps[col], df_val["date_time"], df_val[col])
+                ax.plot(time_pd, model_temps[col], color, label="Modelled")
+                ax.plot(df_val["date_time"], df_val[col], "k", label="Measured")
+                ax.text(0.95, 0.05, f"{d} cm depth\nRMSE = {rmse:.2f} °C\nMAE = {mae:.2f} °C\nBias = {bias:.2f} °C",
+                        transform=ax.transAxes, fontsize=12, va="bottom", ha="right", bbox=dict(facecolor="white", alpha=0.7, edgecolor="none"))
+                ax.set_xlim((pd.to_datetime("2016-05-15"), pd.to_datetime("2016-09-30")))
+                ax.set_ylim((-10, 5))
+                ax.legend(loc="upper left")
+                ax.set_ylabel("Temperature [C]")
+                ax.grid()
+            axs[-1].set_xlabel("Time")
+            fig.tight_layout()
+            fig.savefig(sim_dir / "temperature_layers.png", dpi=300)
+            plt.close(fig)
+
+    return rmse_weight, pd.DataFrame(rows)
+
+
 def run_simulation(sim_dir: Path) -> float:
     """Run the model of one trial in a child process and return the objective (mean RMSE over the observed depths)."""
     script = sim_dir / "run_simulation_subprocess.py"
@@ -226,70 +329,9 @@ def run_simulation(sim_dir: Path) -> float:
         if result.returncode != 0:  # a killed run can leave a partial results.nc
             print(f"  => run failed (exit code {result.returncode}), not scored: {sim_dir.name}")
             return float("inf")
-        df_val = pd.read_csv(OBSERVATION_CSV, parse_dates=["date_time"])
-
-        with POSTPROC_LOCK, Dataset(nc_path, "r") as nc:
-            time_units = nc.variables["time"].units
-            time_dt = netCDF4.num2date(nc.variables["time"][:], units=time_units)
-            time_pd = pd.to_datetime(np.array([to_native_datetime(t) for t in time_dt]))
-            ground_temp = nc.variables["ground_temperature_distribution"][:]  # (nt, nx, nz)
-            abs_zgr = nc.variables["abs_zgr"][:][0, 1, :]  # column of grid point 1, as in the published driver
-
-        problem = results_end_problem(sim_dir, time_pd[-1])
-        if problem:
-            print(f"  => run incomplete, not scored: {problem}")
-            return float("inf")
-
-        depth_model = (abs_zgr - abs_zgr[0]) * -1
-        depth_map = {f"dpth{d}cm": d / 100 + SENSOR_DEPTH_OFFSET for d in range(0, 426, 25) if d not in (75,)}  # 0, 25, 50, 100, ..., 425 cm (17 depths)
-
-        rmse_list, bias_list, model_temps = [], [], {}
-        surface_temp_model = None
-        for col, depth_val in depth_map.items():
-            idx = np.abs(depth_model - depth_val).argmin()
-            model_temp = ground_temp[:, 1, idx] - 273.15  # K to degC, middle grid point
-            model_temps[col] = model_temp
-            if col == "dpth0cm":
-                surface_temp_model = model_temp.copy()
-            rmse, mae, bias = compute_metrics(time_pd, model_temp, df_val["date_time"], df_val[col])
-            rmse_list.append(rmse)
-            bias_list.append(bias)
-
-        rmse_mean = np.mean(rmse_list)
-        rmse_weight = np.average(rmse_list, weights=np.ones(len(rmse_list)))  # all depths equally weighted
-
-        # penalty: a surface that never gets above freezing means the model never thawed
-        if surface_temp_model is not None and np.all(surface_temp_model < 0.01):
-            rmse_weight *= 10.0
-            print("  WARNING: surface temperature (dpth0cm) is never above zero. Applying penalty factor 10x")
-
-        with open(sim_dir / "rmse_bias_layers.txt", "w") as f:
-            f.write(f"Weighted RMSE: {rmse_weight:.4f}\nMean RMSE: {rmse_mean:.4f}\n\n")
-            for col, r, b in zip(depth_map, rmse_list, bias_list):
-                f.write(f"{col}: RMSE={r:.4f}, Bias={b:.4f}\n")
-
-        if MAKE_FIGURE:
-            with POSTPROC_LOCK:
-                selected = [0, 50, 100, 200, 300]
-                fig, axs = plt.subplots(len(selected), 1, figsize=(18, 12), sharex=True)
-                for ax, d, color in zip(axs, selected, ["C0", "C1", "C2", "C3", "C4"]):
-                    col = f"dpth{d}cm"
-                    rmse, mae, bias = compute_metrics(time_pd, model_temps[col], df_val["date_time"], df_val[col])
-                    ax.plot(time_pd, model_temps[col], color, label="Modelled")
-                    ax.plot(df_val["date_time"], df_val[col], "k", label="Measured")
-                    ax.text(0.95, 0.05, f"{d} cm depth\nRMSE = {rmse:.2f} °C\nMAE = {mae:.2f} °C\nBias = {bias:.2f} °C",
-                            transform=ax.transAxes, fontsize=12, va="bottom", ha="right", bbox=dict(facecolor="white", alpha=0.7, edgecolor="none"))
-                    ax.set_xlim((pd.to_datetime("2016-05-15"), pd.to_datetime("2016-09-30")))
-                    ax.set_ylim((-10, 5))
-                    ax.legend(loc="upper left")
-                    ax.set_ylabel("Temperature [C]")
-                    ax.grid()
-                axs[-1].set_xlabel("Time")
-                fig.tight_layout()
-                fig.savefig(sim_dir / "temperature_layers.png", dpi=300)
-                plt.close(fig)
-
-        del time_pd
+        rmse_weight, _ = score_borehole_2016(sim_dir, SENSOR_DEPTH_OFFSET, MAKE_FIGURE)  # module values read here, not at definition
+        if np.isinf(rmse_weight):  # incomplete results.nc
+            return rmse_weight
         gc.collect()
         print("=> finished this iteration")
 
@@ -306,42 +348,46 @@ def run_simulation(sim_dir: Path) -> float:
     return rmse_weight
 
 
-def objective(trial: optuna.Trial) -> float:
+def sample_params(trial: optuna.Trial) -> dict:
+    """All parameters of one trial: the structured ones, then the remaining (fixed or plain) entries of PARAM_RANGES.
+    With optuna.trial.FixedTrial(trial.params) this rebuilds the parameter set of a finished trial."""
     params = suggest_thermal_params(trial)
-    for k, v in PARAM_RANGES.items():  # remaining (fixed or plain) parameters
+    for k, v in PARAM_RANGES.items():
         if k in params:
             continue
         if isinstance(v[0], int) and isinstance(v[1], int):
             params[k] = trial.suggest_int(k, int(v[0]), int(v[1]))
         else:
             params[k] = trial.suggest_float(k, float(v[0]), float(v[1]))
+    return params
 
-    sim_dir = RUN_ROOT_DIR / f"optuna_trial_{trial.number:06d}"
-    if sim_dir.exists():
-        shutil.rmtree(sim_dir)
-    shutil.copytree(BASE_SIM_DIR, sim_dir)
-    update_config_yaml(sim_dir, params)
 
-    rmse = run_simulation(sim_dir)
+def objective(trial: optuna.Trial) -> float:
+    params = sample_params(trial)
+
+    work_dir, sim_dir = hpc.trial_dirs(RUN_ROOT_DIR, SCRATCH, trial.number)  # the same folder unless SCRATCH is set
+    try:
+        if work_dir.exists():
+            shutil.rmtree(work_dir)
+        shutil.copytree(BASE_SIM_DIR, work_dir)
+        update_config_yaml(work_dir, params)
+        rmse = run_simulation(work_dir)
+    finally:  # also after a failed run: run.log is needed
+        hpc.finish_trial_dir(work_dir, sim_dir, KEEP_RESULTS_NC, KEEP_XB_FILES)
     trial.set_user_attr("sim_dir", str(sim_dir))
     trial.set_user_attr("rmse", float(rmse))
 
-    with open(RUN_ROOT_DIR / "calibration_prints.txt", "a", encoding="utf-8") as f:
-        f.write(f"Trial {trial.number} completed.\n  Parameters: {params}\n  RMSE: {rmse}\n  Simulation directory: {sim_dir}\n")
+    hpc.append_log(RUN_ROOT_DIR / "calibration_prints.txt",
+                   f"Trial {trial.number} completed.\n  Parameters: {params}\n  RMSE: {rmse}\n  Simulation directory: {sim_dir}\n")
     return float(rmse)
 
 
 def main():
     RUN_ROOT_DIR.mkdir(parents=True, exist_ok=True)
     print_log = RUN_ROOT_DIR / "calibration_prints.txt"
-    with open(print_log, "a", encoding="utf-8") as f:
-        f.write(f"Calibration run started: {datetime.datetime.now()}\n")
+    hpc.append_log(print_log, f"Calibration run started: {datetime.datetime.now()}\n")
 
-    study = optuna.create_study(
-        study_name=STUDY_NAME, direction="minimize", load_if_exists=True,
-        storage=f"sqlite:///{(RUN_ROOT_DIR / 'optuna_study.db').as_posix()}",
-        sampler=optuna.samplers.TPESampler(seed=SEED),
-    )
+    study = hpc.open_study(STUDY_NAME, RUN_ROOT_DIR, STORAGE, optuna.samplers.TPESampler(seed=SEED, constant_liar=CONSTANT_LIAR))
     if START_PARAMS is not None and len(study.trials) == 0:
         study.enqueue_trial(START_PARAMS)  # first trial of a new study
 
@@ -352,14 +398,12 @@ def main():
         study.optimize(objective, n_trials=n_todo, n_jobs=N_PARALLEL, callbacks=[lambda study, trial: gc.collect()])
     except KeyboardInterrupt:
         print("Optimization interrupted by user.")
-        with open(print_log, "a", encoding="utf-8") as f:
-            f.write("Optimization interrupted by user.\n")
+        hpc.append_log(print_log, "Optimization interrupted by user.\n")
 
     study.trials_dataframe().to_csv(RUN_ROOT_DIR / "calibration_results.csv", index=False)
     best = study.best_trial
-    with open(print_log, "a", encoding="utf-8") as f:
-        f.write(f"\nCalibration finished: {datetime.datetime.now()}\nBest parameters found: {best.params}\n"
-                f"Best trial number: {best.number}\nBest RMSE: {best.value}\n")
+    hpc.append_log(print_log, f"\nCalibration finished: {datetime.datetime.now()}\nBest parameters found: {best.params}\n"
+                              f"Best trial number: {best.number}\nBest RMSE: {best.value}\n")
     print("Best parameters found:", best.params)
     print("Best trial number:", best.number)
     print("Best RMSE:", best.value)
