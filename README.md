@@ -151,6 +151,8 @@ The model and the Optuna calibration drivers run on Linux. Job scripts, environm
 | `model.spinup_state_out` / `model.spinup_state_in` | path or `None` | save the thermal state at the end of the spin-up, and continue from it (refuses to load if thermal config, start time, forcing, water levels and waves (storm table) during the spin-up, or grid differ) |
 | `output.log_xbeach_calls` / `output.log_conservation` | `true` (default) / `false` | write `xbeach_calls.csv` and `conservation_log.csv` to the result folder; a summary goes to the end of `run.log` |
 
+The example configs set `conduction_form: flux` and `latent_heat_form: volumetric`. The Barter Island example also uses the v1.1 thermal parameter set (thermal calibration trial 935, `dt: 60`, `era5_flux_shift_hours: 1`); its XBeach and wrapper parameters are still those of the published coupled calibration.
+
 The calibration drivers are in [`calibration/`](calibration/README.md).
 
 ---

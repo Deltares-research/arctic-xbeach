@@ -142,6 +142,10 @@ thermal:
   depth_constant_k    : 0    # CHANGE to 0 (constant from surface)
   geothermal_gradient : 0.00
 
+  # v1.1 solver options (legacy v1.0 alternatives:  conduction_form: nodal  and  latent_heat_form: per_mass)
+  conduction_form  : flux        # flux: conservative finite-volume form with harmonic-mean k at the cell faces | nodal: k * d2T/dz2 with nodal k (v1.0)
+  latent_heat_form : volumetric  # volumetric: L*nb*rho_water/rho_soil | per_mass: L*nb per kg of soil (v1.0; volumetric latent heat rho_soil*L*nb)
+
 # output
 output:
   output_res              : 1  # temporal resolution of output variables in hours (i.e., model outputs given variable names every X hours)
