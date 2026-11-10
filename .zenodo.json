@@ -4,12 +4,33 @@
   "access_right": "open",
   "license": "gpl-3.0",
   "creators": [
-    {"name": "Nederhoff, Kees", "affiliation": "Deltares USA", "orcid": "0000-0003-0552-3428"},
-    {"name": "De Bruijn, Kevin", "affiliation": "Delft University of Technology"},
-    {"name": "Ravens, Tom", "affiliation": "University of Alaska Anchorage"}
+    {
+      "name": "Nederhoff, Kees",
+      "affiliation": "Deltares USA",
+      "orcid": "0000-0003-0552-3428"
+    },
+    {
+      "name": "De Bruijn, Kevin",
+      "affiliation": "Delft University of Technology"
+    },
+    {
+      "name": "Ravens, Tom",
+      "affiliation": "University of Alaska Anchorage"
+    }
   ],
-  "keywords": ["Arctic", "permafrost", "coastal erosion", "XBeach", "thermo-morphodynamic model"],
+  "keywords": [
+    "Arctic",
+    "permafrost",
+    "coastal erosion",
+    "XBeach",
+    "thermo-morphodynamic model"
+  ],
   "related_identifiers": [
-    {"identifier": "10.5194/egusphere-2026-2371", "relation": "isSupplementTo", "scheme": "doi"}
-  ]
+    {
+      "identifier": "10.5194/egusphere-2026-2371",
+      "relation": "isSupplementTo",
+      "scheme": "doi"
+    }
+  ],
+  "notes": "Funding: Deltares SITO-IS research programme (Moonshot 2 Flooding); Office of Naval Research, Multidisciplinary University Research Initiative (MURI) \"Advanced Arctic Coastal Erosion Modeling\" led by the University of Alaska Anchorage."
 }

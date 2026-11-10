@@ -181,6 +181,9 @@ If you use Arctic-XBeach in your research, please cite:
 > Nederhoff, K., de Bruijn, K., Seyfert, C., et al. (in preparation). Arctic-XBeach: A Python-Based Thermo-Morphodynamic Model for Arctic Permafrost Coastal Erosion. *Geoscientific Model Development*.
 
 ---
+## Funding
+Development of Arctic-XBeach and the Barter Island case study were funded by Deltares through the SITO-IS research programme (Moonshot 2 Flooding). The v1.1 revision was also supported by the Office of Naval Research through the Multidisciplinary University Research Initiative (MURI) "Advanced Arctic Coastal Erosion Modeling" led by the University of Alaska Anchorage.
+
 ## License
 Arctic-XBeach is licensed under the GNU General Public License v3.0 - see the [LICENSE](LICENSE) file for details.
 
