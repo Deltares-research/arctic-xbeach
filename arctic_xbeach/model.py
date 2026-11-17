@@ -273,7 +273,7 @@ class Simulation():
             self.xgr = np.linspace(min(self.bathy_grid), max(self.bathy_grid), nx)
         else:
             # Transform into a more suitable grid for XBeach
-            self.xgr, self.zgr = xgrid(self.bathy_grid, self.bathy_initial, dxmin=2, ppwl=self.config.bathymetry.ppwl)
+            self.xgr, self.zgr = xgrid(self.bathy_grid, self.bathy_initial, dxmin=self.config.bathymetry.get('dxmin', 2), ppwl=self.config.bathymetry.ppwl)
         
         # Interpolate bathymetry to grid
         self.zgr = np.interp(self.xgr, self.bathy_grid, self.bathy_initial)
@@ -1802,7 +1802,7 @@ class Simulation():
             # generate a new xgrid and zgrid (but only if the next timestep does not require a hotstart, which requires the same xgrid)
             if timestep_id + 1 < len(self.xbeach_times) and not self.check_xbeach(timestep_id + 1):
                                 
-                self.xgr_new, self.zgr_new = xgrid(self.xgr, bathy_current, dxmin=2, ppwl=self.config.bathymetry.ppwl)
+                self.xgr_new, self.zgr_new = xgrid(self.xgr, bathy_current, dxmin=self.config.bathymetry.get('dxmin', 2), ppwl=self.config.bathymetry.ppwl)
                 self.zgr_new = np.interp(self.xgr_new, self.xgr, bathy_current)
                 
                 # ensure that the grid doesn't extend further offshore than the original grid (this is a bug in the xbeach python toolbox)

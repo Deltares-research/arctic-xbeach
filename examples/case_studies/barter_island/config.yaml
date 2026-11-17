@@ -48,6 +48,7 @@ bathymetry:
   depfile         : 'bed.dep'  # file used for the bed
   grid_orientation: 88.14  # [degrees], orientation of bluff face with respect to east (ccw). The current orientation is calculated in the 'generate_bathymetry.ipynb' notebook
   ppwl            : 40  # number of points in the grid per wavelength. Default 20.
+  dxmin           : 2   # [m] minimum cross-shore grid size, also used for all dry cells (beach, bluff). Default 2. Smaller = finer bluff, slower XBeach calls.
   nx              : 3   # number of points in initial grid. Set to 'None' if this should be based on ppwl.
   with_nx         : False  # whether or not to use the number of points specified with nx
 
