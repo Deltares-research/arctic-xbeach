@@ -51,10 +51,13 @@ def trial_dirs(run_root: Path, scratch: Path | None, number: int) -> tuple[Path,
     return (scratch / name if scratch else run_root / name), run_root / name
 
 
-def finish_trial_dir(work_dir: Path, final_dir: Path, keep_results_nc: bool, keep_xb_files: bool) -> None:
+def finish_trial_dir(work_dir: Path, final_dir: Path, keep_results_nc: bool, keep_xb_files: bool, merge: bool = False) -> None:
     """With scratch: copy the trial folder back to RUN_ROOT (also after a failed run: run.log is needed) without the XBeach
     call folders and, unless kept, results.nc, then delete the scratch copy. Without scratch: delete the XBeach call folders
     after scoring if keep_xb_files is False.
+
+    merge=True (the revision round: final_dir was built by the prep and holds job.log, console.log and status files written by other
+    processes): final_dir is not deleted first, the files are copied into it.
 
     This never raises: an error in the copy would abort the whole study. If the copy fails the error is printed and run.log and
     config.yaml are copied on their own. The scratch folder is kept, but a per-job TMPDIR is deleted by the job epilog, so
@@ -73,9 +76,9 @@ def finish_trial_dir(work_dir: Path, final_dir: Path, keep_results_nc: bool, kee
         return [n for n in names if n == "xb_files" or (n == "results.nc" and not keep_results_nc)]
 
     try:
-        if final_dir.exists():
+        if final_dir.exists() and not merge:
             shutil.rmtree(final_dir)
-        shutil.copytree(work_dir, final_dir, ignore=ignore)
+        shutil.copytree(work_dir, final_dir, ignore=ignore, dirs_exist_ok=merge)
     except OSError as e:  # full disk, NFS error: keep the study alive and save what matters
         print(f"  ERROR copying {work_dir} to {final_dir}: {e}")
         for name in ("run.log", "config.yaml"):

@@ -7,6 +7,13 @@ checked. Without READY this script prints why and exits 2 at once (no waiting, n
 the coupled driver's CHILD_SCRIPT does (Simulation(sim_dir, proj_dir=repo); main(sim, print_to_screen=False)) in one child process
 of this interpreter, and score_run(run_dir, period) of score_coupled_run.py writes score.json. A failure of the scoring is logged
 and does not fail the job. Exit code: 0 = model finished, 1 = model failed, 2 = round not READY / unknown run.
+
+Scratch (AXB_SCRATCH, the H7 job): the model runs in <AXB_SCRATCH>/<run id>, a copy of the run folder, so that the ~26,000 small XBeach call
+folders (results/xb_files) and the results.nc being written stay on the node's disk. Every HEARTBEAT_S the run.log, results/xbeach_calls.csv and
+ne_layer.txt are copied to the run folder (the collector reads progress from them). After the model ends the scratch folder is copied back into the
+run folder without results/xb_files (optuna_hpc.finish_trial_dir, merge mode) and deleted; model_exit_code.txt is written and the run is scored on
+the run folder. results.nc is therefore in the run folder under <AXB_REVISION_ROOT> at the end, and on scratch only while the model runs.
+Without AXB_SCRATCH nothing changes: the model runs in the run folder.
 """
 # === CONFIGURATION ===
 import os
@@ -16,6 +23,8 @@ DRY_RUN = False        # True: run nothing, only print what would be done (root 
 ROOT_BASE = Path(os.environ.get("AXB_REVISION_ROOT", r"N:\arctic-xbeach-runs\v11_runs\revision_round_20261104"))
 REPO_DIR = Path(__file__).resolve().parents[1]
 CALIB_DIR = Path(__file__).resolve().parent
+SCRATCH = Path(os.environ["AXB_SCRATCH"]) if os.environ.get("AXB_SCRATCH") else None   # run in <SCRATCH>/<run id> and copy back; None = run in the run folder
+HEARTBEAT_S = 300      # scratch only: seconds between copies of run.log etc. to the run folder
 # === END CONFIGURATION ===
 
 for _var in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS"):
@@ -23,6 +32,7 @@ for _var in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS"):
 
 import csv
 import datetime
+import shutil
 import subprocess
 import sys
 import time
@@ -55,6 +65,27 @@ def find_run(run_id: str) -> tuple[Path, str]:
             if row["id"] == run_id:
                 return Path(row["folder"]), row["period"]
     raise KeyError(f"{run_id} is not in {ROOT / 'design.csv'}")
+
+
+def sync_progress(work_dir: Path, run_dir: Path) -> None:
+    """Scratch: copy the small files that show progress (the collector reads run.log and the XBeach call table) to the run folder. Never raises."""
+    for name in ("run.log", "results/xbeach_calls.csv", "ne_layer.txt"):
+        try:
+            if (work_dir / name).exists():
+                (run_dir / name).parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(work_dir / name, run_dir / name)
+        except OSError as e:
+            log(f"progress copy of {name} failed: {e}")
+
+
+def copy_back(work_dir: Path, run_dir: Path) -> None:
+    """Scratch: everything except results/xb_files into the run folder (results.nc included), then the scratch copy is deleted
+    (optuna_hpc.finish_trial_dir does not raise; after a failed copy the scratch folder is kept and run.log and config.yaml are copied alone)."""
+    sys.path.insert(0, str(CALIB_DIR))
+    from optuna_hpc import finish_trial_dir
+    t0 = time.time()
+    finish_trial_dir(work_dir, run_dir, keep_results_nc=True, keep_xb_files=False, merge=True)
+    log(f"copied {work_dir} back to {run_dir} without results/xb_files ({time.time() - t0:.0f} s)")
 
 
 def main() -> int:
@@ -105,16 +136,29 @@ def main() -> int:
         rc = 0
         log(f"{run_id}: model already finished (model_exit_code.txt), only scoring")
     elif DRY_RUN:
-        log(f"{run_id}: DRY RUN, would run the model in {run_dir} and score it as {period}")
+        log(f"{run_id}: DRY RUN, would run the model in {SCRATCH / run_id if SCRATCH else run_dir} and score it as {period}")
         return 0
     else:
-        script = run_dir / "run_simulation_subprocess.py"
-        script.write_text(CHILD_SCRIPT.format(repo=str(REPO_DIR), sim_dir=str(run_dir)))
-        log(f"{run_id}: starting the model in {run_dir} ({period})")
+        work_dir = SCRATCH / run_id if SCRATCH else run_dir
+        if SCRATCH:   # a copy of the folder the prep built; the pool's job.log and the console log stay in the run folder
+            if work_dir.exists():
+                shutil.rmtree(work_dir)
+            shutil.copytree(run_dir, work_dir, ignore=shutil.ignore_patterns("job.log", "console.log", "run.lock", "model_exit_code.txt"))
+        script = work_dir / "run_simulation_subprocess.py"
+        script.write_text(CHILD_SCRIPT.format(repo=str(REPO_DIR), sim_dir=str(work_dir)))
+        log(f"{run_id}: starting the model in {work_dir} ({period})")
         t0 = datetime.datetime.now()
         with open(run_dir / "console.log", "w") as console:
-            rc = subprocess.run([sys.executable, str(script)], cwd=str(run_dir), stdout=console, stderr=subprocess.STDOUT).returncode
+            proc = subprocess.Popen([sys.executable, str(script)], cwd=str(work_dir), stdout=console, stderr=subprocess.STDOUT)
+            while True:
+                try:
+                    rc = proc.wait(timeout=HEARTBEAT_S if SCRATCH else None)
+                    break
+                except subprocess.TimeoutExpired:
+                    sync_progress(work_dir, run_dir)
         hours = (datetime.datetime.now() - t0).total_seconds() / 3600
+        if SCRATCH:
+            copy_back(work_dir, run_dir)
         status.write_text(f"{rc}\nfinished {datetime.datetime.now():%Y-%m-%d %H:%M:%S}, {hours:.2f} h\n")   # a native crash leaves only this
         log(f"{run_id}: model exit code {rc} after {hours:.2f} h")
 

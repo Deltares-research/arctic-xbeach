@@ -20,6 +20,10 @@ final_round_design). Its ROOT_BASE, S0*, PERTURBATIONS, HC_LONG_DT_RUN and the o
 SPINUP_STATES, ID_PREFIX replace those below, and its build_runs(_run) returns the RUNS. Runs may reuse a saved spin-up
 (_run(..., spinup="<name of SPINUP_STATES>")); step f then proves for each such run that the state loads (see check_spinup_reuse).
 Without the variable the 16-run design below is built exactly as before.
+Paths: every path of the configuration block has an AXB_* override (AXB_REVISION_ROOT, AXB_A1_DB, AXB_A1_DRY_CONFIG, AXB_CFL_SUMMARY, AXB_BASE_SIM_DIR,
+AXB_FORCING_CSV, AXB_STORM_CSV; the design module adds its own), the Windows value is the default. AXB_XBEACH_EXE, AXB_XBEACH_LAUNCHER and AXB_OUTPUT_RES
+are read by the coupled driver (imported in step e) and written into the template and so into every run config; step f checks that they arrived.
+AXB_REQUIRE_POSIX_PATHS=1 makes the prep fail if any written config.yaml still holds a Windows drive path. hpc/h7/coupled_round.sbatch sets all of them.
 Run:  python -u calibration/run_revision_round.py     (launch_prep.bat in ROOT sets the thread variables)
 """
 # === CONFIGURATION ===
@@ -32,16 +36,16 @@ REPO_DIR = Path(__file__).resolve().parents[1]
 CALIB_DIR = Path(__file__).resolve().parent
 
 # A1 (thermal recalibration, true sensor depth, dt 60 s)
-A1_DB = Path(r"N:\arctic-xbeach-runs\thermal_calibration_runs\20261103_desktop_truedepth_dt60\optuna_study.db")
+A1_DB = Path(os.environ.get("AXB_A1_DB", r"N:\arctic-xbeach-runs\thermal_calibration_runs\20261103_desktop_truedepth_dt60\optuna_study.db"))
 A1_STUDY = "thermal_v11_truedepth_dt60"
 A1_MIN_COMPLETE = int(os.environ.get("AXB_A1_MIN_COMPLETE", 950))  # prep starts only after A1's job has ended (FIFO queue); 950 lets a run that lost a few trials still go ahead
-A1_DRY_CONFIG = Path(r"N:\arctic-xbeach-runs\v11_runs\thermal_calibration\optuna_trial_000490\config.yaml")  # thermal best of the dry run
+A1_DRY_CONFIG = Path(os.environ.get("AXB_A1_DRY_CONFIG", r"N:\arctic-xbeach-runs\v11_runs\thermal_calibration\optuna_trial_000490\config.yaml"))  # thermal best of the dry run
 
 # A2 to A4: run_thermal_experiments.py with these settings
 A2_A4_N_PARALLEL = 14
 
 # CFL gate
-CFL_SUMMARY = Path(r"N:\arctic-xbeach-runs\v11_runs\cfl09_check\cfl_check_summary.txt")
+CFL_SUMMARY = Path(os.environ.get("AXB_CFL_SUMMARY", r"N:\arctic-xbeach-runs\v11_runs\cfl09_check\cfl_check_summary.txt"))
 CFL_DEFAULT, CFL_FALLBACK = 0.9, 0.7
 CFL_WAIT_MIN, CFL_POLL_S = 0, 30        # the CFL job is ahead of prep in the FIFO queue, so a missing summary means it failed: no wait
 
@@ -54,9 +58,12 @@ CFL_FIXED = None                # float: step c returns it without reading CFL_S
 SPINUP_STATES = {}              # name -> source .npz; copied to <ROOT>\spinup\<name>.npz, used by _run(..., spinup=name)
 
 # Coupled template and forcing
-BASE_SIM_DIR = Path(r"N:\arctic-xbeach-runs\v11_runs\coupled_base_v11")
-ERA5_CSV = Path(r"N:\arctic-xbeach-runs\database\era5.csv")
-STORMS_CSV = Path(r"N:\arctic-xbeach-runs\database\storms.csv")
+# The AXB_* names are those of the coupled driver (calibration/README.md); step e passes these values on to it
+BASE_SIM_DIR = Path(os.environ.get("AXB_BASE_SIM_DIR", r"N:\arctic-xbeach-runs\v11_runs\coupled_base_v11"))
+ERA5_CSV = Path(os.environ.get("AXB_FORCING_CSV", r"N:\arctic-xbeach-runs\database\era5.csv"))
+STORMS_CSV = Path(os.environ.get("AXB_STORM_CSV", r"N:\arctic-xbeach-runs\database\storms.csv"))
+# True (AXB_REQUIRE_POSIX_PATHS=1, the H7 job): the prep fails if a written config.yaml holds a Windows drive path (see check_posix_paths)
+REQUIRE_POSIX_PATHS = os.environ.get("AXB_REQUIRE_POSIX_PATHS", "0").lower() in ("1", "true", "yes")
 THERMAL_DT = 60        # [s] coupled thermal dt (h_c 1210 may need less, see step d)
 TIMESTEP_S = 3600      # [s] model timestep, the thermal dt must divide it
 
@@ -79,12 +86,12 @@ PERTURBATIONS = {
 }
 
 
-def _run(n, label, period, change, params=None, model=None, hc_guess=None, forcing=None, wrapper=None, thermal=None, spinup=None):
+def _run(n, label, period, change, params=None, model=None, hc_guess=None, forcing=None, wrapper=None, thermal=None, spinup=None, output=None):
     """One row of the design: S0 plus `change`. params -> xbeach/wrapper, model -> model section, forcing -> key of PERTURBATIONS.
     wrapper / thermal: values of those sections that replace S0's (e.g. sea_ice_threshold, N_thaw_threshold); spinup: key of SPINUP_STATES,
-    the run restarts from that saved state (model.spinup_state_in)."""
+    the run restarts from that saved state (model.spinup_state_in); output: values of the output section that replace the driver's (output_res)."""
     return dict(id=f"{ID_PREFIX}{n:02d}", label=label, period=period, change=change, params=params or {}, model=model or {},
-                hc_guess=hc_guess, forcing=forcing, wrapper=wrapper or {}, thermal=thermal or {}, spinup=spinup)
+                hc_guess=hc_guess, forcing=forcing, wrapper=wrapper or {}, thermal=thermal or {}, spinup=spinup, output=output or {})
 
 
 # In queue order (the order of the plan table)
@@ -137,6 +144,7 @@ for _spec in PERTURBATIONS.values():   # a design may leave out src: it is the b
     _spec.setdefault("src", ERA5_CSV if _spec["target"] == "era5" else STORMS_CSV)
 
 ROOT = ROOT_BASE        # set in main() (<ROOT>_dryrun for DRY_RUN)
+DRV = None              # the coupled driver module, set in step e
 
 
 def folder_name(run: dict) -> str:
@@ -173,10 +181,14 @@ def step_a_thermal_best() -> Path:
     if THERMAL_BEST_SOURCE is not None:   # a thermal best chosen earlier (also in the dry run): copy it, no A1 database
         src_txt = next((c for c in (THERMAL_BEST_SOURCE.with_name("thermal_best.txt"), THERMAL_BEST_SOURCE.parent.parent / "thermal_best.txt")
                         if c.exists()), None)
-        if not THERMAL_BEST_SOURCE.exists() or src_txt is None:
-            fail(f"thermal best source incomplete: {THERMAL_BEST_SOURCE} or its thermal_best.txt is missing")
+        if not THERMAL_BEST_SOURCE.exists():
+            fail(f"thermal best source missing: {THERMAL_BEST_SOURCE}")
         shutil.copy2(THERMAL_BEST_SOURCE, cfg_out)
-        txt_out.write_text(src_txt.read_text(encoding="utf-8").rstrip("\n") + f"\nreused from {THERMAL_BEST_SOURCE} (txt: {src_txt})\n", encoding="utf-8")
+        if src_txt is None:   # e.g. on H7, where only the config was copied: the record of the trial is not available
+            log(f"a: WARNING no thermal_best.txt next to {THERMAL_BEST_SOURCE}; the trial number is not recorded")
+            txt_out.write_text(f"thermal best config reused from {THERMAL_BEST_SOURCE} (no thermal_best.txt found there)\n", encoding="utf-8")
+        else:
+            txt_out.write_text(src_txt.read_text(encoding="utf-8").rstrip("\n") + f"\nreused from {THERMAL_BEST_SOURCE} (txt: {src_txt})\n", encoding="utf-8")
         log(f"a: thermal best reused from {THERMAL_BEST_SOURCE}")
         return cfg_out
 
@@ -343,14 +355,21 @@ def step_e_template(thermal_cfg: Path, cfl: float):
     os.environ["AXB_THERMAL_CONFIG_YAML"] = str(thermal_cfg)
     os.environ["AXB_BASE_SIM_DIR"] = str(BASE_SIM_DIR)
     os.environ["AXB_THERMAL_DT"] = str(THERMAL_DT)
+    os.environ["AXB_FORCING_CSV"] = str(ERA5_CSV)    # the driver writes these into the template; the checks of step f compare with ERA5_CSV / STORMS_CSV
+    os.environ["AXB_STORM_CSV"] = str(STORMS_CSV)
+    global DRV
     import auto_calibrate_coupled_model as drv   # importing reads the observations, imports optuna and matplotlib; nothing is started
+    DRV = drv
     import yaml
     from arctic_xbeach.config_loader import load_config
     template = drv.prepare_template()
     cfg = load_config(template / "config.yaml")
     cfg["wrapper"]["CFL_xbeach"] = cfl
+    if os.environ.get("AXB_XBEACH_LAUNCHER") == "":   # set but empty: XBeach is started directly, whatever the base config holds
+        cfg["xbeach"].pop("launcher", None)
     (template / "config.yaml").write_text(yaml.dump(cfg, default_flow_style=False))
     log(f"e: template {template} (thermal from {thermal_cfg}, thermal dt {THERMAL_DT}, CFL_xbeach {cfl})")
+    log(f"e: xbeach.version {cfg['xbeach'].get('version')}, xbeach.launcher {cfg['xbeach'].get('launcher')!r}, output.output_res {cfg['output'].get('output_res')} h")
     return template, drv
 
 
@@ -454,9 +473,15 @@ def run_settings(run: dict, dt: int, forcing_paths: dict[str, Path]) -> dict:
         else:
             want[f"xbeach.{k}"] = v
     want["xbeach.facSk"] = want["xbeach.facAs"] = params["facua"]
+    if DRV is not None:   # what the coupled driver writes from AXB_XBEACH_EXE / AXB_XBEACH_LAUNCHER / AXB_OUTPUT_RES must reach every run config
+        want["output.output_res"] = DRV.OUTPUT_RES
+        if DRV.XBEACH_EXE is not None:
+            want["xbeach.version"] = str(DRV.XBEACH_EXE)
+        if DRV.XBEACH_LAUNCHER is not None:
+            want["xbeach.launcher"] = DRV.XBEACH_LAUNCHER
     for k, v in run_model(run).items():
         want[f"model.{k}"] = v
-    for section in ("wrapper", "thermal"):
+    for section in ("wrapper", "thermal", "output"):
         for k, v in run[section].items():
             want[f"{section}.{k}"] = v
     if run["forcing"]:
@@ -482,6 +507,7 @@ def build_run_folder(run: dict, dt: int, template: Path, drv, forcing_paths: dic
     cfg["thermal"]["dt"] = dt
     cfg["thermal"]["N_thaw_threshold"] = params["N_thaw_threshold"]   # the model reads it from the thermal section only
     cfg["thermal"].update(run["thermal"])
+    cfg.setdefault("output", {}).update(run["output"])
     if run["forcing"]:
         key = "forcing_data_path" if PERTURBATIONS[run["forcing"]]["target"] == "era5" else "storm_data_path"
         cfg["data"][key] = str(forcing_paths[run["forcing"]])
@@ -608,6 +634,35 @@ def check_spinup_reuse(run: dict, spinup_seen: dict) -> None:
         f"({sim.timestamps[start_id]}) ({time.time() - t0:.0f} s)")
 
 
+DRIVE_PATH_RE = re.compile(r"(?<![A-Za-z0-9])[A-Za-z]:[\\/]")   # N:\x, d:/x, P:/x; not the s:// of a URL
+
+
+def windows_drive_paths(cfg: dict) -> list[str]:
+    """'key = value' of every string (or list of strings) in the config that holds a Windows drive path. output.output_path is not counted
+    while output.use_default_output_path is true: the model then ignores it (the base config keeps a P:/ path there)."""
+    unused = "output.output_path" if cfg.get("output", {}).get("use_default_output_path") else None
+    hits = []
+    for k, v in flatten(cfg).items():
+        text = v if isinstance(v, str) else json.dumps(v, default=str) if isinstance(v, (list, tuple)) else ""
+        if k != unused and DRIVE_PATH_RE.search(text):
+            hits.append(f"{k} = {text}")
+    return hits
+
+
+def check_posix_paths(template: Path) -> None:
+    """Only with AXB_REQUIRE_POSIX_PATHS=1 (H7): fails the prep if the template or any written run config.yaml holds a Windows drive path."""
+    if not REQUIRE_POSIX_PATHS:
+        return
+    from arctic_xbeach.config_loader import load_config
+    problems = []
+    for folder in [template] + [ROOT / folder_name(r) for r in RUNS]:
+        problems += [f"{folder.name}: {hit}" for hit in windows_drive_paths(load_config(folder / "config.yaml"))]
+    if problems:
+        fail("AXB_REQUIRE_POSIX_PATHS is set but written config.yaml files hold Windows drive paths:\n" + "\n".join(problems[:20])
+             + (f"\n... and {len(problems) - 20} more" if len(problems) > 20 else ""))
+    log(f"f: AXB_REQUIRE_POSIX_PATHS: no Windows drive path in the template and the {len(RUNS)} run configs")
+
+
 def step_f_runs(template: Path, drv, cfl: float, dt_info: dict) -> None:
     from arctic_xbeach.config_loader import load_config
     forcing_paths = build_forcing()
@@ -636,6 +691,7 @@ def step_f_runs(template: Path, drv, cfl: float, dt_info: dict) -> None:
                          thermal_dt=dt_info["hc1210_dt"] if hc == HC_LONG_DT_RUN else THERMAL_DT, hc_guess=hc, cfl_xbeach=cfl))
         if DESIGN_MODULE:
             rows[-1]["spinup"] = f"{run['spinup']}.npz" if run["spinup"] else "own"
+            rows[-1]["output_res"] = run["output"].get("output_res", DRV.OUTPUT_RES)
     import csv
     with open(ROOT / "design.csv", "w", newline="", encoding="utf-8") as f:
         w = csv.DictWriter(f, fieldnames=list(rows[0]))
@@ -652,6 +708,8 @@ def main() -> None:
     for marker in ("FAILED", "READY"):   # a rerun rebuilds and rewrites them
         (ROOT / marker).unlink(missing_ok=True)
     log(f"=== revision round prep started{' (DRY RUN)' if DRY_RUN else ''}, root {ROOT}, branch of {REPO_DIR} ===")
+    if DESIGN_MODULE:
+        log(f"design {DESIGN_MODULE}: centre set S0 {S0}{', source ' + _design.CENTER_SOURCE if hasattr(_design, 'CENTER_SOURCE') else ''}")
     try:
         thermal_cfg = step_a_thermal_best()
         best_trial = None
@@ -663,6 +721,7 @@ def main() -> None:
         dt_info = step_d_thermal_dt(thermal_cfg)
         template, drv = step_e_template(thermal_cfg, cfl)
         step_f_runs(template, drv, cfl, dt_info)
+        check_posix_paths(template)
     except SystemExit:
         raise
     except Exception as e:
