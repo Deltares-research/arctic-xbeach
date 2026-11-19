@@ -187,3 +187,44 @@ The trials that were running are lost, because their scratch folders are gone wi
 4. **The XBeach module.** `ldd` in the job log must show no `not found`.
 5. **Journal on `/u`.** The file `optuna_journal.log` should grow during the run; lock errors in the job log would mean that the NFS lock
    method of Optuna does not work there. The sbatch scripts also probe the run lock of `arctic_xbeach` in `AXB_RUN_ROOT` before the driver starts.
+
+## Revision round (27 coupled runs, `coupled_round.sbatch`)
+
+One job on one 44vcpu node runs the 27 runs of `calibration/h7_round_design.py` at the same time (one core each, `--time=5-00:00:00`; change it with
+`sbatch --time=...`). The design is that of the 7 Nov round (`final_round_design.py`, same roles and order, run ids `h01` to `h27`) with the centre set C read from a JSON file
+and the morphology pairs re-centred (xb_threshold 1.75 / 2.00, dryslp 0.40 / 0.75, facua 0.05 / 0.20, wetslp 0.05 / 0.25, bedfriccoef 0.020 / 0.040). The centre runs
+h02 (P3), h13 (P1) and h14 (P2) write hourly thermal output (`AXB_CENTER_OUTPUT_RES`, 1); all other runs `AXB_OUTPUT_RES` (24). XBeach is the serial "zero" build
+(`/u/nederhof/opt/xbeach-halloween-serial-zero/bin/xbeach`), started directly: `AXB_XBEACH_LAUNCHER` is empty. Check out the `h7-round` branch in `/u/nederhof/git/arctic-xbeach` first.
+
+```bash
+cat > /u/nederhof/arctic-xbeach-runs/round_v3_t569_center.json <<'JSON'
+{"facua": 0.0142, "bedfriccoef": 0.0286, "wetslp": 0.1594, "dryslp": 0.5243, "xb_threshold": 1.8460, "source": "v3 trial 569"}
+JSON
+export AXB_REVISION_ROOT=/u/nederhof/arctic-xbeach-runs/round_v3_t569
+export AXB_ROUND_CENTER_JSON=/u/nederhof/arctic-xbeach-runs/round_v3_t569_center.json
+mkdir -p /u/nederhof/arctic-xbeach-runs/logs
+sbatch /u/nederhof/git/arctic-xbeach/hpc/h7/coupled_round.sbatch
+```
+
+Every variable is documented in the header of the sbatch file. What goes where (everything under `/u/nederhof/arctic-xbeach-runs/`):
+
+| H7 target | Source | Variable (default) |
+|---|---|---|
+| `database/era5.csv`, `database/storms.csv` | on H7 | `AXB_FORCING_CSV`, `AXB_STORM_CSV` |
+| `observations/bluff_edges_without_geometry.csv`, `observations/shore_lines_without_geometry.csv` | on H7 | `AXB_BLUFF_EDGES_CSV`, `AXB_SHORELINES_CSV` |
+| `thermal_best_A1_t935/config.yaml` | on H7 | `AXB_THERMAL_BEST_SOURCE` |
+| `coupled_base_v11/` (`config.yaml`, `x.grd`, `bed.dep`, `ne_layer.txt`) | `N:\arctic-xbeach-runs\v11_runs\coupled_base_v11\` | `AXB_BASE_SIM_DIR` |
+| `spinup_states/P2_center.npz` | `N:\arctic-xbeach-runs\v11_runs\final_round_20261107\spinup\P2_center.npz` | `AXB_SPINUP_STATES_DIR` (the folder) |
+
+The perturbed forcing copies (air temperature +/- 2 K, Hs x 0.9 / 1.1, WL +/- 0.2 m) are not staged: the prep writes them from `era5.csv` and `storms.csv` into `$AXB_REVISION_ROOT/forcing/`.
+The prep proves for each run that restarts from `P2_center.npz` that the state loads (thermal config, forcing and storm table must equal those of the state), so a wrong
+file stops the job before any run starts.
+
+* **Where the files are.** Each run works in `$TMPDIR/axb_round/<run id>` on the node (`AXB_SCRATCH`): XBeach call folders (`results/xb_files`, ~26,000 files) and the `results.nc` that is being written
+  stay there. Every 5 minutes `run.log`, `results/xbeach_calls.csv` and `ne_layer.txt` are copied to the run folder in `AXB_REVISION_ROOT` (the collector reads progress from them). When the model ends, the
+  scratch folder is copied back to the run folder without `results/xb_files`, then deleted, the exit code is written to `model_exit_code.txt` and the run is scored (`score.json`). So `results.nc`
+  (hourly: ~8 to 13 GB for h02, h13 and h14) is on `/u` after the run; during it, the three hourly files plus 27 sets of `xb_files` need roughly 50 to 60 GB of the 138 GB scratch (estimate, check `df` in the log).
+* **Monitoring.** `$AXB_REVISION_ROOT/summary/round_summary.md` is rewritten every hour (progress and ETA per run from `run.log`), `pool.log` lists starts and ends, `prep.log` the prep, `<run folder>/job.log` the output of one run.
+* **Checks of the prep.** With `AXB_REQUIRE_POSIX_PATHS=1` (set by the sbatch) the prep stops if any written `config.yaml` holds a Windows drive path (`output.output_path` is ignored while `use_default_output_path` is true),
+  and every run config must hold the XBeach executable, launcher and `output_res` that the sbatch gave.
+* **Not checked yet.** Whether the serial zero build needs a module for its libraries (the job stops if `ldd` shows `not found`; set `AXB_XBEACH_MODULE`), and the time one run takes on H7.
