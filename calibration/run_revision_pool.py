@@ -33,10 +33,17 @@ child_env = dict(os.environ, AXB_REVISION_ROOT=str(ROOT))   # children (runs, co
 
 
 def log(msg: str) -> None:
+    """pool.log first, then the job log; a failed write (full quota, lost stdout) must not stop the pool while runs are going."""
     line = f"{datetime.datetime.now():%Y-%m-%d %H:%M:%S} {msg}"
-    print(line, flush=True)
-    with (ROOT / "pool.log").open("a", encoding="utf-8") as f:
-        f.write(line + "\n")
+    try:
+        with (ROOT / "pool.log").open("a", encoding="utf-8") as f:
+            f.write(line + "\n")
+    except OSError:
+        pass
+    try:
+        print(line, flush=True)
+    except OSError:
+        pass
 
 
 def collect_once() -> None:
