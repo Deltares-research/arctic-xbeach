@@ -69,6 +69,10 @@ TIMESTEP_S = 3600      # [s] model timestep, the thermal dt must divide it
 
 # Periods: model.time_start, model.time_end ('DD-MM-YYYY', as the v1.0 validation configs), 10-year thermal spin-up
 PERIODS = {"P1": ("01-01-1999", "01-01-2012"), "P2": ("01-01-2002", "01-01-2016"), "P3": ("01-01-2006", "01-01-2019")}
+SMOKE_DAYS = int(os.environ.get("AXB_SMOKE_DAYS", "0"))   # smoke test only: > 0 ends every period this many days after its start
+if SMOKE_DAYS > 0:
+    import datetime as _dt
+    PERIODS = {k: (a, (_dt.datetime.strptime(a, "%d-%m-%Y") + _dt.timedelta(days=SMOKE_DAYS)).strftime("%d-%m-%Y")) for k, (a, b) in PERIODS.items()}
 SPIN_UP_YEARS = 10
 
 # Centre set S0 (xbeach / wrapper parameters, as the coupled driver's update_config_yaml takes them)

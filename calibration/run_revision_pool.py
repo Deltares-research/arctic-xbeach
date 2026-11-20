@@ -14,6 +14,7 @@ from pathlib import Path
 ROOT = Path(os.environ.get("AXB_REVISION_ROOT", r"N:\arctic-xbeach-runs\v11_runs\revision_round_20261104"))
 REPO = Path(__file__).resolve().parents[1]
 MAX_PARALLEL = int(os.environ.get("AXB_MAX_PARALLEL", 14))   # = the cores declared for the round job
+ONLY_RUNS = {r.strip() for r in os.environ.get("AXB_ONLY_RUNS", "").split(",") if r.strip()}   # smoke test: run only these ids (empty = all)
 COLLECT_EVERY_MIN = 60     # one collector pass this often
 POLL_S = 30
 # === END CONFIGURATION ===
@@ -53,6 +54,12 @@ def main() -> int:
     with (ROOT / "design.csv").open(newline="", encoding="utf-8") as f:
         design = [(r["id"], Path(r["folder"])) for r in csv.DictReader(f)]
     todo = [(rid, d) for rid, d in design if not (d / "model_exit_code.txt").exists()]
+    if ONLY_RUNS:
+        unknown = ONLY_RUNS - {rid for rid, _ in design}
+        if unknown:
+            log(f"AXB_ONLY_RUNS holds ids that are not in design.csv: {sorted(unknown)}; no runs started")
+            return 2
+        todo = [(rid, d) for rid, d in todo if rid in ONLY_RUNS]
     log(f"{len(design)} runs in design, {len(todo)} to run, {MAX_PARALLEL} at a time")
     running: dict[str, subprocess.Popen] = {}
     last_collect = 0.0

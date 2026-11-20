@@ -46,6 +46,9 @@
 #                            AXB_REVISION_ROOT without results/xb_files when the run ends. AXB_SCRATCH= (empty) runs on /u (slow, ~26,000 files per run)
 # Pool:
 #   AXB_MAX_PARALLEL         runs at the same time (27)
+# SMOKE TEST ONLY (leave unset for the round):
+#   AXB_SMOKE_DAYS           > 0: every run ends this many days after its period start (prep writes that time_end; scores are not comparable)
+#   AXB_ONLY_RUNS            comma list of run ids the pool starts (e.g. h14); the exit check looks at these only
 # Fixed by this script: AXB_ROUND_DESIGN=h7_round_design, AXB_REQUIRE_POSIX_PATHS=1 (the prep fails if a config.yaml holds a Windows drive path),
 #   AXB_REPO_DIR (/u/nederhof/git/arctic-xbeach, branch h7-round), AXB_ENV_DIR (/u/nederhof/envs/arctic-xbeach), one BLAS/OpenMP thread per process.
 set -euo pipefail
@@ -153,6 +156,8 @@ AXB_COLLECT_ONCE=1 python -u calibration/collect_revision_round.py || true
 # nonzero exit if a run did not finish: model_exit_code.txt of every run folder (written by run_revision_one.py)
 n_bad=0
 for code in "$AXB_REVISION_ROOT"/h[0-9][0-9]_*/model_exit_code.txt; do
+    run_id=$(basename "$(dirname "$code")"); run_id=${run_id%%_*}
+    if [ -n "${AXB_ONLY_RUNS:-}" ] && [[ ",${AXB_ONLY_RUNS// /}," != *",$run_id,"* ]]; then continue; fi   # smoke test: only the runs it ran
     [ -f "$code" ] || { echo "no model exit code file: $code"; n_bad=$((n_bad + 1)); continue; }
     [ "$(head -n 1 "$code")" = "0" ] || { echo "run failed: $code ($(head -n 1 "$code"))"; n_bad=$((n_bad + 1)); }
 done
