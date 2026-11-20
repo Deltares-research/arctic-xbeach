@@ -69,11 +69,14 @@ TIMESTEP_S = 3600      # [s] model timestep, the thermal dt must divide it
 
 # Periods: model.time_start, model.time_end ('DD-MM-YYYY', as the v1.0 validation configs), 10-year thermal spin-up
 PERIODS = {"P1": ("01-01-1999", "01-01-2012"), "P2": ("01-01-2002", "01-01-2016"), "P3": ("01-01-2006", "01-01-2019")}
-SMOKE_DAYS = int(os.environ.get("AXB_SMOKE_DAYS", "0"))   # smoke test only: > 0 ends every period this many days after its start
+SPIN_UP_YEARS = 10
+# Smoke test only: AXB_SMOKE_DAYS > 0 ends every period this many days after the END of its spin-up (start + SPIN_UP_YEARS x 365.25 d,
+# the timestep a stored spin-up state resumes at). XBeach is called every call_xbeach_inter hours from then on, so a few weeks give several calls.
+SMOKE_DAYS = int(os.environ.get("AXB_SMOKE_DAYS", "0"))
 if SMOKE_DAYS > 0:
     import datetime as _dt
-    PERIODS = {k: (a, (_dt.datetime.strptime(a, "%d-%m-%Y") + _dt.timedelta(days=SMOKE_DAYS)).strftime("%d-%m-%Y")) for k, (a, b) in PERIODS.items()}
-SPIN_UP_YEARS = 10
+    PERIODS = {k: (a, (_dt.datetime.strptime(a, "%d-%m-%Y") + _dt.timedelta(days=SPIN_UP_YEARS * 365.25 + SMOKE_DAYS)).strftime("%d-%m-%Y"))
+               for k, (a, b) in PERIODS.items()}
 
 # Centre set S0 (xbeach / wrapper parameters, as the coupled driver's update_config_yaml takes them)
 S0 = dict(bedfriccoef=0.02, facua=0.02, wetslp=0.2, dryslp=0.75, xb_threshold=2.0, lsgrad=0.0, N_thaw_threshold=3)

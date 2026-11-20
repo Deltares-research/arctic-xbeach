@@ -47,7 +47,7 @@
 # Pool:
 #   AXB_MAX_PARALLEL         runs at the same time (27)
 # SMOKE TEST ONLY (leave unset for the round):
-#   AXB_SMOKE_DAYS           > 0: every run ends this many days after its period start (prep writes that time_end; scores are not comparable)
+#   AXB_SMOKE_DAYS           > 0: every run ends this many days after the end of its 10-year spin-up (prep writes that time_end; scores are not comparable)
 #   AXB_ONLY_RUNS            comma list of run ids the pool starts (e.g. h14); the exit check looks at these only
 # Fixed by this script: AXB_ROUND_DESIGN=h7_round_design, AXB_REQUIRE_POSIX_PATHS=1 (the prep fails if a config.yaml holds a Windows drive path),
 #   AXB_REPO_DIR (/u/nederhof/git/arctic-xbeach, branch h7-round), AXB_ENV_DIR (/u/nederhof/envs/arctic-xbeach), one BLAS/OpenMP thread per process.
